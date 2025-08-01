@@ -2,37 +2,95 @@
 use actix::prelude::*;
 use log::trace;
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufRead, BufReader, Error as IOErr, Read, Seek, Write};
 use std::process::exit;
 
 const MAX_BYTE_STRING_LEN: i64 = 1 << 32;
 
 #[derive(Debug, PartialEq, Eq, Clone)]
+pub struct Position {
+    pub offset: u64,
+    pub length: u64,
+}
+
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub enum Bencoding {
-    Integer(i64),
-    ByteString(Vec<u8>),
-    List(Vec<Bencoding>),
-    Dictionary(HashMap<Vec<u8>, Bencoding>),
+    Integer {
+        integer: i64,
+        position: Option<Position>,
+    },
+    ByteString {
+        byte_string: Vec<u8>,
+        position: Option<Position>,
+    },
+    List {
+        list: Vec<Bencoding>,
+        position: Option<Position>,
+    },
+    Dictionary {
+        dictionary: HashMap<Vec<u8>, Bencoding>,
+        position: Option<Position>,
+    },
 }
 
 impl Bencoding {
-    pub fn serialize<W: Write>(element: &Bencoding, output: &mut W) {
-        unimplemented!()
+    pub fn serialize<W: Write>(&self, output: &mut W) -> Result<(), IOErr> {
+        match self {
+            Bencoding::Integer { integer, .. } => {
+                output.write_all("i".as_bytes())?;
+                output.write_all(format!("{}", integer).as_bytes())?;
+                output.write_all("e".as_bytes())?;
+            }
+            Bencoding::ByteString { byte_string, .. } => {
+                output.write_all(format!("{}", byte_string.len()).as_bytes())?;
+                output.write_all(":".as_bytes())?;
+                output.write_all(byte_string)?;
+            }
+            Bencoding::List { list, .. } => {
+                output.write_all("l".as_bytes())?;
+                for element in list.iter() {
+                    element.serialize(output)?;
+                }
+                output.write_all("e".as_bytes())?;
+            }
+            Bencoding::Dictionary { dictionary, .. } => {
+                output.write_all("d".as_bytes())?;
+                for (key, value) in dictionary {
+                    Bencoding::ByteString {
+                        byte_string: key.clone(),
+                        position: None,
+                    }
+                    .serialize(output)?;
+                    value.serialize(output)?;
+                }
+                output.write_all("e".as_bytes())?;
+            }
+        }
+
+        Ok(())
     }
 
-    pub fn deserialize<R: Read>(reader: &mut BufReader<R>) -> Result<Bencoding, ()> {
+    pub fn deserialize<R: Read + Seek>(reader: &mut BufReader<R>) -> Result<Bencoding, ()> {
+        let offset = reader.stream_position().unwrap(); // TODO
+
         match peek_char(reader) {
             Some('i') => {
                 trace!("Deserialising integer");
 
                 eat_char(reader, 'i')?;
 
-                let num = read_decimal(reader);
+                let integer = read_decimal(reader);
 
                 eat_char(reader, 'e')?;
 
-                trace!("Deserialised integer={}", num);
-                return Ok(Bencoding::Integer(num));
+                trace!("Deserialised integer={}", integer);
+
+                let length = reader.stream_position().unwrap() - offset;
+
+                return Ok(Bencoding::Integer {
+                    integer,
+                    position: Some(Position { offset, length }),
+                });
             }
             Some('l') => {
                 trace!("Deserialising list");
@@ -47,35 +105,53 @@ impl Bencoding {
 
                 eat_char(reader, 'e')?;
 
+                let length = reader.stream_position().unwrap() - offset;
+
                 trace!("Deserialised list of length {}", list.len());
-                return Ok(Bencoding::List(list));
+
+                return Ok(Bencoding::List {
+                    list,
+                    position: Some(Position { offset, length }),
+                });
             }
             Some('d') => {
                 trace!("Deserialising dictionary");
 
                 eat_char(reader, 'd')?;
 
-                let mut dict = HashMap::new();
+                let mut dictionary = HashMap::new();
 
                 while peek_char(reader) != Some('e') {
                     let key = read_string(reader)?;
                     let value = Bencoding::deserialize(reader)?;
 
-                    dict.insert(key, value);
+                    dictionary.insert(key, value);
                 }
 
                 eat_char(reader, 'e')?;
 
+                let length = reader.stream_position().unwrap() - offset;
+
                 trace!("Deserialised dictionary");
-                Ok(Bencoding::Dictionary(dict))
+
+                Ok(Bencoding::Dictionary {
+                    dictionary,
+                    position: Some(Position { offset, length }),
+                })
             }
             Some(c) if c.is_ascii_digit() => {
                 trace!("Deserialising byte string");
 
-                let string = read_string(reader)?;
+                let byte_string = read_string(reader)?;
 
-                trace!("Deserialised byte string of length {}", string.len());
-                return Ok(Bencoding::ByteString(string));
+                trace!("Deserialised byte string of length {}", byte_string.len());
+
+                let length = reader.stream_position().unwrap() - offset;
+
+                return Ok(Bencoding::ByteString {
+                    byte_string,
+                    position: Some(Position { offset, length }),
+                });
             }
             _ => unimplemented!(),
         }
@@ -83,7 +159,7 @@ impl Bencoding {
 
     pub fn is_list(&self) -> bool {
         match self {
-            &Bencoding::List(_) => true,
+            &Bencoding::List { .. } => true,
             _ => false,
         }
     }
@@ -161,7 +237,9 @@ mod test {
 
         assert_eq!(
             Bencoding::deserialize(&mut cursor),
-            Ok(Bencoding::ByteString("spam".as_bytes().to_vec()))
+            Ok(Bencoding::ByteString {
+                byte_string: "spam".as_bytes().to_vec()
+            })
         );
         assert_eq!(
             cursor.stream_position().unwrap(),
@@ -175,7 +253,7 @@ mod test {
 
         assert_eq!(
             Bencoding::deserialize(&mut cursor),
-            Ok(Bencoding::Integer(3))
+            Ok(Bencoding::Integer { integer: 3 })
         );
         assert_eq!(
             cursor.stream_position().unwrap(),
@@ -189,7 +267,7 @@ mod test {
 
         assert_eq!(
             Bencoding::deserialize(&mut cursor),
-            Ok(Bencoding::Integer(-3))
+            Ok(Bencoding::Integer { integer: -3 })
         );
         assert_eq!(
             cursor.stream_position().unwrap(),
@@ -203,7 +281,7 @@ mod test {
 
         assert_eq!(
             Bencoding::deserialize(&mut cursor),
-            Ok(Bencoding::List(Vec::new()))
+            Ok(Bencoding::List { list: Vec::new() })
         );
         assert_eq!(
             cursor.stream_position().unwrap(),

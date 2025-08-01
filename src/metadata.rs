@@ -1,11 +1,12 @@
-use crate::bencoding::Bencoding;
+use crate::bencoding::{Bencoding, Position};
 use log::{error, trace};
+use sha1::{Digest, Sha1};
 
 #[derive(Debug)]
 pub struct Metadata {
-    pub info: Info,
     pub announce: String,
     pub announce_list: Option<Vec<Vec<String>>>,
+    pub info: Info,
     pub creation_date: Option<u64>,
     pub comment: Option<String>,
     pub created_by: Option<String>,
@@ -18,6 +19,7 @@ pub struct Info {
     pub pieces: Vec<Vec<u8>>,
     pub file_info: ModeFile,
     pub name: Vec<u8>,
+    pub position: Position,
 }
 
 #[derive(Debug)]
@@ -30,7 +32,7 @@ pub enum ModeFile {
 pub struct FileInfo {
     pub length: i64,
     pub md5sum: Option<Vec<u8>>,
-    pub path: Vec<u8>,
+    pub path: Vec<Vec<u8>>,
 }
 
 #[derive(Debug)]
@@ -41,12 +43,13 @@ pub enum MetadataError {
     MissingPieces,
     MissingPiecesLength,
     InvalidFileInfo,
+    InvalidPath,
 }
 
 impl Metadata {
     pub fn parse(file: Bencoding) -> Result<Metadata, MetadataError> {
         let dictionary = match file {
-            Bencoding::Dictionary(dict) => dict,
+            Bencoding::Dictionary { dictionary, .. } => dictionary,
             _ => return Err(MetadataError::UnexpectedType),
         };
 
@@ -58,7 +61,9 @@ impl Metadata {
         let announce = dictionary
             .get(b"announce".as_ref())
             .and_then(|v| match v {
-                Bencoding::ByteString(bs) => Some(String::from_utf8_lossy(&bs).to_string()),
+                Bencoding::ByteString { byte_string, .. } => {
+                    Some(String::from_utf8_lossy(&byte_string).to_string())
+                }
                 _ => None,
             })
             .ok_or(MetadataError::MissingAnnounce)?;
@@ -73,29 +78,37 @@ impl Metadata {
             encoding: None,
         })
     }
+
+    pub fn total_file_bytes(&self) -> u64 {
+        return (match &self.info.file_info {
+            ModeFile::Single { length } => *length,
+            ModeFile::Multiple { files } => files.iter().map(|f| f.length).sum(),
+        }) as u64;
+    }
 }
 
 impl Info {
     pub fn parse(info: Bencoding) -> Result<Info, MetadataError> {
-        let dictionary = match info {
-            Bencoding::Dictionary(d) => d,
+        let (dictionary, position) = match info {
+            Bencoding::Dictionary {
+                dictionary,
+                position: Some(position),
+            } => (dictionary, position),
             _ => return Err(MetadataError::UnexpectedType),
         };
 
         let pieces_length = dictionary
             .get(b"piece length".as_ref())
             .and_then(|v| match v {
-                Bencoding::Integer(pieces_length) => Some(pieces_length),
+                Bencoding::Integer { integer, .. } => Some(integer),
                 _ => None,
             })
             .ok_or(MetadataError::MissingPiecesLength)?;
 
-        println!("piece length {}", pieces_length);
-
         let pieces = dictionary
             .get(b"pieces".as_ref())
             .and_then(|v| match v {
-                Bencoding::ByteString(pieces) => Some(parse_pieces(pieces)),
+                Bencoding::ByteString { byte_string, .. } => Some(parse_pieces(byte_string)),
                 _ => None,
             })
             .ok_or(MetadataError::MissingPieces)??;
@@ -103,22 +116,26 @@ impl Info {
         let name = dictionary
             .get(b"name".as_ref())
             .and_then(|v| match v {
-                Bencoding::ByteString(n) => Some(n),
+                Bencoding::ByteString { byte_string, .. } => Some(byte_string),
                 _ => None,
             })
             .ok_or(MetadataError::MissingPiecesLength)?;
 
-        if let Some(Bencoding::Integer(length)) = dictionary.get("length".as_bytes()) {
+        if let Some(Bencoding::Integer {
+            integer: length, ..
+        }) = dictionary.get("length".as_bytes())
+        {
             return Ok(Info {
                 name: name.clone(),
                 pieces_length: *pieces_length as u32,
                 pieces,
                 file_info: ModeFile::Single { length: *length },
+                position,
             });
         }
 
         let files = match dictionary.get("files".as_bytes()) {
-            Some(Bencoding::List(files)) => files
+            Some(Bencoding::List { list, .. }) => list
                 .iter()
                 .map(parse_file)
                 .collect::<Result<Vec<FileInfo>, MetadataError>>()?,
@@ -130,13 +147,14 @@ impl Info {
             pieces_length: *pieces_length as u32,
             pieces,
             file_info: ModeFile::Multiple { files },
+            position,
         })
     }
 }
 
 fn parse_file(element: &Bencoding) -> Result<FileInfo, MetadataError> {
     let dictionary = match element {
-        Bencoding::Dictionary(dictionary) => dictionary,
+        Bencoding::Dictionary { dictionary, .. } => dictionary,
         _ => return Err(MetadataError::InvalidFileInfo),
     };
 
@@ -145,12 +163,23 @@ fn parse_file(element: &Bencoding) -> Result<FileInfo, MetadataError> {
         dictionary.get("md5sum".as_bytes()),
         dictionary.get("path".as_bytes()),
     ) {
-        (Some(Bencoding::Integer(length)), md5sum, Some(Bencoding::List(paths))) => {
+        (
+            Some(Bencoding::Integer {
+                integer: length, ..
+            }),
+            md5sum,
+            Some(Bencoding::List { list: path, .. }),
+        ) => {
             let md5sum = match md5sum {
-                Some(Bencoding::ByteString(md5sum)) => Some(md5sum.clone()),
+                Some(Bencoding::ByteString {
+                    byte_string: md5sum,
+                    ..
+                }) => Some(md5sum.clone()),
                 None => None,
                 _ => return Err(MetadataError::InvalidFileInfo),
             };
+
+            let path: Vec<Vec<u8>> = path.iter().map(parse_path).collect::<Result<_, _>>()?;
 
             Ok(FileInfo {
                 length: *length,
@@ -168,4 +197,11 @@ fn parse_file(element: &Bencoding) -> Result<FileInfo, MetadataError> {
 
 fn parse_pieces(element: &Vec<u8>) -> Result<Vec<Vec<u8>>, MetadataError> {
     Ok(element.chunks(20).map(|chunk| chunk.to_vec()).collect())
+}
+
+fn parse_path(element: &Bencoding) -> Result<Vec<u8>, MetadataError> {
+    match element {
+        Bencoding::ByteString { byte_string, .. } => Ok(byte_string.clone()),
+        _ => Err(MetadataError::InvalidPath),
+    }
 }

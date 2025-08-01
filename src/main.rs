@@ -2,15 +2,22 @@
 use actix::prelude::*;
 use std::env::args;
 use std::fs::File;
-use std::io::BufReader;
+use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::process::exit;
 
 use env_logger::init;
+use log::{debug, info};
+use sha1::{Digest, Sha1};
 
 mod bencoding;
+mod coordinator;
+mod filer;
+mod init;
 mod metadata;
+mod tracker;
 
-use crate::bencoding::Bencoding;
+use crate::bencoding::{Bencoding, Position};
+use crate::init::{Init, InitDownload};
 use crate::metadata::Metadata;
 
 fn main() {
@@ -21,22 +28,66 @@ fn main() {
     if metadata.len() < 2 {
         eprintln!("Metadata file is required");
 
-        return exit(1);
+        exit(1);
     }
 
     let metadata_file = &metadata[1];
-    println!("Using metadata file {}", metadata_file);
 
+    // Open the file to decode metadata
     let handle = File::open(metadata_file).unwrap();
     let mut reader = BufReader::new(handle);
-
     let file = Bencoding::deserialize(&mut reader).unwrap();
+    drop(reader);
 
     let metadata = Metadata::parse(file).unwrap();
 
-    println!("Metadata: {:?}", metadata);
+    // Open the file again, this time for hashing
+    let mut handle = File::open(metadata_file).unwrap();
+    let info_hash = get_info_hash(&mut handle, metadata.info.position.clone());
+    drop(handle);
 
-    return exit(0);
+    info!("Announce URL: {}", metadata.announce);
+    info!("Pieces: {}", metadata.info.pieces.len());
+    info!("Piece length: {}", metadata.info.pieces_length);
+    info!(
+        "Directory: {}",
+        String::from_utf8_lossy(&metadata.info.name)
+    );
+
+    let info_hex = info_hash
+        .iter()
+        .map(|b| format!("{:02x}", b))
+        .collect::<String>();
+    info!("Info hash: {}", info_hex);
+
+    let left = metadata.total_file_bytes();
+
+    let system = System::new();
+    system.block_on(async move {
+        debug!("Starting system");
+        let init: Init = Default::default();
+        let init_addr: Addr<Init> = init.start();
+
+        init_addr
+            .send(InitDownload {
+                metadata,
+                info_hash,
+                left,
+            })
+            .await;
+        debug!("Sent InitDownload");
+    });
+}
+
+fn get_info_hash(handle: &mut File, position: Position) -> Vec<u8> {
+    let mut buffer = vec![0; position.length as usize];
+    handle.seek(SeekFrom::Start(position.offset));
+    handle.read_exact(&mut buffer);
+
+    let mut hasher = Sha1::new();
+    hasher.update(buffer);
+
+    return hasher.finalize().as_slice().to_vec();
 }
 
 struct Download {}
