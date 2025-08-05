@@ -1,9 +1,7 @@
 #![feature(bufreader_peek)]
-use actix::prelude::*;
 use log::trace;
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader, Error as IOErr, Read, Seek, Write};
-use std::process::exit;
+use std::io::{BufReader, Error as IOErr, Read, Seek, Write};
 
 const MAX_BYTE_STRING_LEN: i64 = 1 << 32;
 
@@ -87,10 +85,10 @@ impl Bencoding {
 
                 let length = reader.stream_position().unwrap() - offset;
 
-                return Ok(Bencoding::Integer {
+                Ok(Bencoding::Integer {
                     integer,
                     position: Some(Position { offset, length }),
-                });
+                })
             }
             Some('l') => {
                 trace!("Deserialising list");
@@ -109,10 +107,10 @@ impl Bencoding {
 
                 trace!("Deserialised list of length {}", list.len());
 
-                return Ok(Bencoding::List {
+                Ok(Bencoding::List {
                     list,
                     position: Some(Position { offset, length }),
-                });
+                })
             }
             Some('d') => {
                 trace!("Deserialising dictionary");
@@ -148,10 +146,10 @@ impl Bencoding {
 
                 let length = reader.stream_position().unwrap() - offset;
 
-                return Ok(Bencoding::ByteString {
+                Ok(Bencoding::ByteString {
                     byte_string,
                     position: Some(Position { offset, length }),
-                });
+                })
             }
             _ => unimplemented!(),
         }
@@ -176,7 +174,7 @@ fn read_string<R: Read>(reader: &mut BufReader<R>) -> Result<Vec<u8>, ()> {
     let mut byte_buffer = vec![0; length as usize];
     reader.read_exact(&mut byte_buffer).unwrap();
 
-    return Ok(byte_buffer);
+    Ok(byte_buffer)
 }
 
 fn read_decimal<R: Read>(reader: &mut BufReader<R>) -> i64 {
@@ -194,8 +192,7 @@ fn read_decimal<R: Read>(reader: &mut BufReader<R>) -> i64 {
         }
     }
 
-    let byte_length = String::from_utf8_lossy(&digit_vec).parse::<i64>().unwrap();
-    byte_length
+    String::from_utf8_lossy(&digit_vec).parse::<i64>().unwrap()
 }
 
 fn eat_char<R: Read>(reader: &mut BufReader<R>, expected_char: char) -> Result<(), ()> {

@@ -35,7 +35,7 @@ impl Actor for Init {
 #[rtype(result = "()")]
 pub struct InitDownload {
     pub metadata: Metadata,
-    pub info_hash: Vec<u8>,
+    pub info_hash: [u8; 20],
     pub left: u64,
 }
 

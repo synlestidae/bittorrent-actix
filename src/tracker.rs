@@ -1,23 +1,23 @@
-use crate::bencoding::Bencoding;
 use crate::coordinator::Coordinator;
+use crate::peer::{Handshake, Peer};
+use crate::{bencoding::Bencoding, tracker};
 use actix::prelude::*;
 use log::{debug, error};
 use percent_encoding::{NON_ALPHANUMERIC, percent_encode};
 use rand::RngCore;
-use std::net::IpAddr;
 use std::{
-    io::{BufReader, Cursor, Read},
+    io::{BufReader, Cursor},
     net::{Ipv4Addr, Ipv6Addr},
 };
-use ureq;
 use ureq::get;
 use ureq::http::StatusCode;
 
 #[derive(Default)]
 pub struct Tracker {
     announce_url: Option<String>,
-    info_hash: Option<Vec<u8>>,
+    info_hash: Option<[u8; 20]>,
     coordinator: Option<Addr<Coordinator>>,
+    peer_id: Option<[u8; 20]>,
 }
 
 impl Actor for Tracker {
@@ -28,7 +28,7 @@ impl Actor for Tracker {
 #[rtype(result = "Result<(), TrackerError>")]
 pub struct AskTracker {
     pub announce_url: String,
-    pub info_hash: Vec<u8>,
+    pub info_hash: [u8; 20],
     pub coordinator: Addr<Coordinator>,
     pub left: u64,
 }
@@ -59,7 +59,7 @@ impl From<ureq::Error> for TrackerError {
 impl Handler<AskTracker> for Tracker {
     type Result = Result<(), TrackerError>;
 
-    fn handle(&mut self, msg: AskTracker, _ctx: &mut Context<Self>) -> Self::Result {
+    fn handle(&mut self, msg: AskTracker, ctx: &mut Context<Self>) -> Self::Result {
         self.announce_url = Some(msg.announce_url.clone());
         self.info_hash = Some(msg.info_hash.clone());
         self.coordinator = Some(msg.coordinator.clone());
@@ -71,9 +71,10 @@ impl Handler<AskTracker> for Tracker {
         url.push_str(&percent_encode(&msg.info_hash, NON_ALPHANUMERIC).to_string());
 
         url.push_str("&peer_id=");
-        let mut peer_id_data = [0u8; 20];
-        rand::rng().fill_bytes(&mut peer_id_data);
-        url.push_str(&percent_encode(&peer_id_data, NON_ALPHANUMERIC).to_string());
+        let mut peer_id = [0u8; 20];
+        rand::rng().fill_bytes(&mut peer_id);
+        url.push_str(&percent_encode(&peer_id, NON_ALPHANUMERIC).to_string());
+        self.peer_id = Some(peer_id);
 
         url.push_str("&port=6881");
         url.push_str("&uploaded=0");
@@ -86,7 +87,7 @@ impl Handler<AskTracker> for Tracker {
         debug!("Starting tracker request GET {}", url);
 
         // Perform the request
-        let mut response_result = get(url).call();
+        let response_result = get(url).call();
         let mut response = match response_result {
             Ok(r) => r,
             Err(error) => {
@@ -106,12 +107,22 @@ impl Handler<AskTracker> for Tracker {
         let bencoding = Bencoding::deserialize(&mut buf_reader).unwrap();
         let tracker_response = parse_tracker_response(bencoding)?;
         debug!("Tracker response: {:?}", tracker_response);
+
+        for (ip_address, port) in tracker_response.peers.into_iter() {
+            let peer_addr = Peer::new(ip_address, port, ctx.address()).start();
+
+            peer_addr.do_send(Handshake {
+                info_hash: msg.info_hash,
+                peer_id: peer_id,
+            });
+        }
+
         //let tracker_response = parse_tracker_response(bencoding);
 
         // add new peers to dictionary
         // initialise actors for them
         // init the peers if we don't have enough
-        unimplemented!()
+        Ok(())
     }
 }
 
@@ -149,7 +160,7 @@ fn parse_tracker_response(body: Bencoding) -> Result<TrackerResponse, TrackerErr
             };
 
             let peers: Vec<(Ipv4Addr, u16)> = match dictionary.get("peers".as_bytes()) {
-                Some(Bencoding::ByteString { byte_string, .. }) => (byte_string
+                Some(Bencoding::ByteString { byte_string, .. }) => byte_string
                     .chunks(6)
                     .map(|address_port| match address_port {
                         [i0, i1, i2, i3, p0, p1] => (
@@ -158,7 +169,7 @@ fn parse_tracker_response(body: Bencoding) -> Result<TrackerResponse, TrackerErr
                         ),
                         _ => unimplemented!(),
                     })
-                    .collect()),
+                    .collect(),
                 Some(_) => unimplemented!(),
                 None => vec![],
             };

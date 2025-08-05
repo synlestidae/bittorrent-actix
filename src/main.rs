@@ -2,6 +2,7 @@
 use actix::prelude::*;
 use std::env::args;
 use std::fs::File;
+use std::future::pending;
 use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::process::exit;
 
@@ -14,6 +15,7 @@ mod coordinator;
 mod filer;
 mod init;
 mod metadata;
+mod peer;
 mod tracker;
 
 use crate::bencoding::{Bencoding, Position};
@@ -23,7 +25,7 @@ use crate::metadata::Metadata;
 fn main() {
     init();
 
-    let mut args = args();
+    let args = args();
     let metadata: Vec<String> = args.collect();
     if metadata.len() < 2 {
         eprintln!("Metadata file is required");
@@ -63,11 +65,13 @@ fn main() {
     let left = metadata.total_file_bytes();
 
     let system = System::new();
+
     system.block_on(async move {
         debug!("Starting system");
         let init: Init = Default::default();
         let init_addr: Addr<Init> = init.start();
 
+        debug!("Sending InitDownload");
         init_addr
             .send(InitDownload {
                 metadata,
@@ -75,11 +79,12 @@ fn main() {
                 left,
             })
             .await;
-        debug!("Sent InitDownload");
+
+        pending::<()>().await;
     });
 }
 
-fn get_info_hash(handle: &mut File, position: Position) -> Vec<u8> {
+fn get_info_hash(handle: &mut File, position: Position) -> [u8; 20] {
     let mut buffer = vec![0; position.length as usize];
     handle.seek(SeekFrom::Start(position.offset));
     handle.read_exact(&mut buffer);
@@ -87,7 +92,7 @@ fn get_info_hash(handle: &mut File, position: Position) -> Vec<u8> {
     let mut hasher = Sha1::new();
     hasher.update(buffer);
 
-    return hasher.finalize().as_slice().to_vec();
+    hasher.finalize().try_into().unwrap()
 }
 
 struct Download {}

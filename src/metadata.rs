@@ -1,6 +1,5 @@
 use crate::bencoding::{Bencoding, Position};
-use log::{error, trace};
-use sha1::{Digest, Sha1};
+use log::error;
 
 #[derive(Debug)]
 pub struct Metadata {
@@ -62,7 +61,7 @@ impl Metadata {
             .get(b"announce".as_ref())
             .and_then(|v| match v {
                 Bencoding::ByteString { byte_string, .. } => {
-                    Some(String::from_utf8_lossy(&byte_string).to_string())
+                    Some(String::from_utf8_lossy(byte_string).to_string())
                 }
                 _ => None,
             })
@@ -80,10 +79,10 @@ impl Metadata {
     }
 
     pub fn total_file_bytes(&self) -> u64 {
-        return (match &self.info.file_info {
+        ((match &self.info.file_info {
             ModeFile::Single { length } => *length,
             ModeFile::Multiple { files } => files.iter().map(|f| f.length).sum(),
-        }) as u64;
+        }) as u64)
     }
 }
 
@@ -183,14 +182,14 @@ fn parse_file(element: &Bencoding) -> Result<FileInfo, MetadataError> {
 
             Ok(FileInfo {
                 length: *length,
-                md5sum: md5sum,
+                md5sum,
                 path: path.clone(),
             })
         }
         elements => {
             error!("Missing length, md5sum, and or path: {:?}", elements);
 
-            return Err(MetadataError::InvalidFileInfo);
+            Err(MetadataError::InvalidFileInfo)
         }
     }
 }
