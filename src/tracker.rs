@@ -1,6 +1,8 @@
-use crate::coordinator::Coordinator;
+use crate::bencoding::Bencoding;
+use crate::coordinator::{self, Coordinator, TrackerUpdate};
+use crate::filer::Filer;
+use crate::metadata::Metadata;
 use crate::peer::{Handshake, Peer};
-use crate::{bencoding::Bencoding, tracker};
 use actix::prelude::*;
 use log::{debug, error};
 use percent_encoding::{NON_ALPHANUMERIC, percent_encode};
@@ -12,12 +14,29 @@ use std::{
 use ureq::get;
 use ureq::http::StatusCode;
 
-#[derive(Default)]
 pub struct Tracker {
-    announce_url: Option<String>,
-    info_hash: Option<[u8; 20]>,
-    coordinator: Option<Addr<Coordinator>>,
+    metadata: Metadata,
+    coordinator: Addr<Coordinator>,
+    filer: Addr<Filer>,
+    info_hash: [u8; 20],
     peer_id: Option<[u8; 20]>,
+}
+
+impl Tracker {
+    pub fn new(
+        metadata: Metadata,
+        coordinator: Addr<Coordinator>,
+        filer: Addr<Filer>,
+        info_hash: [u8; 20],
+    ) -> Self {
+        Self {
+            metadata,
+            coordinator,
+            filer,
+            info_hash,
+            peer_id: None,
+        }
+    }
 }
 
 impl Actor for Tracker {
@@ -26,12 +45,7 @@ impl Actor for Tracker {
 
 #[derive(Message)]
 #[rtype(result = "Result<(), TrackerError>")]
-pub struct AskTracker {
-    pub announce_url: String,
-    pub info_hash: [u8; 20],
-    pub coordinator: Addr<Coordinator>,
-    pub left: u64,
-}
+pub struct AskTracker {}
 
 pub enum TrackerError {
     HttpError(ureq::Error),
@@ -59,16 +73,13 @@ impl From<ureq::Error> for TrackerError {
 impl Handler<AskTracker> for Tracker {
     type Result = Result<(), TrackerError>;
 
-    fn handle(&mut self, msg: AskTracker, ctx: &mut Context<Self>) -> Self::Result {
-        self.announce_url = Some(msg.announce_url.clone());
-        self.info_hash = Some(msg.info_hash.clone());
-        self.coordinator = Some(msg.coordinator.clone());
-
+    fn handle(&mut self, _msg: AskTracker, ctx: &mut Context<Self>) -> Self::Result {
         // Build the URL for GET request
-        let mut url = msg.announce_url.clone();
+        let mut url = self.metadata.announce.clone();
+        let left = self.metadata.total_file_bytes();
 
         url.push_str("?info_hash=");
-        url.push_str(&percent_encode(&msg.info_hash, NON_ALPHANUMERIC).to_string());
+        url.push_str(&percent_encode(&self.info_hash, NON_ALPHANUMERIC).to_string());
 
         url.push_str("&peer_id=");
         let mut peer_id = [0u8; 20];
@@ -79,7 +90,7 @@ impl Handler<AskTracker> for Tracker {
         url.push_str("&port=6881");
         url.push_str("&uploaded=0");
         url.push_str("&downloaded=0");
-        url.push_str(&format!("&left={}", msg.left));
+        url.push_str(&format!("&left={}", left));
         url.push_str("&compact=1");
         url.push_str("&no_peer_id=0");
         url.push_str("&event=started");
@@ -108,14 +119,7 @@ impl Handler<AskTracker> for Tracker {
         let tracker_response = parse_tracker_response(bencoding)?;
         debug!("Tracker response: {:?}", tracker_response);
 
-        for (ip_address, port) in tracker_response.peers.into_iter() {
-            let peer_addr = Peer::new(ip_address, port, ctx.address()).start();
-
-            peer_addr.do_send(Handshake {
-                info_hash: msg.info_hash,
-                peer_id: peer_id,
-            });
-        }
+        self.coordinator.do_send(TrackerUpdate { tracker_response });
 
         //let tracker_response = parse_tracker_response(bencoding);
 

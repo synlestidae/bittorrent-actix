@@ -5,6 +5,7 @@ use std::fs::File;
 use std::future::pending;
 use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::process::exit;
+use tokio::runtime::Builder;
 
 use env_logger::init;
 use log::{debug, info};
@@ -22,7 +23,8 @@ use crate::bencoding::{Bencoding, Position};
 use crate::init::{Init, InitDownload};
 use crate::metadata::Metadata;
 
-fn main() {
+#[actix::main(worker_threads = 50, max_blocking_threads = 50)]
+async fn main() {
     init();
 
     let args = args();
@@ -62,26 +64,15 @@ fn main() {
         .collect::<String>();
     info!("Info hash: {}", info_hex);
 
-    let left = metadata.total_file_bytes();
+    debug!("Starting system");
 
-    let system = System::new();
+    let init = Init::new(metadata, info_hash);
+    let init_addr: Addr<Init> = init.start();
 
-    system.block_on(async move {
-        debug!("Starting system");
-        let init: Init = Default::default();
-        let init_addr: Addr<Init> = init.start();
+    debug!("Sending InitDownload");
+    init_addr.send(InitDownload {}).await;
 
-        debug!("Sending InitDownload");
-        init_addr
-            .send(InitDownload {
-                metadata,
-                info_hash,
-                left,
-            })
-            .await;
-
-        pending::<()>().await;
-    });
+    pending::<()>().await;
 }
 
 fn get_info_hash(handle: &mut File, position: Position) -> [u8; 20] {

@@ -1,7 +1,7 @@
 use crate::bencoding::{Bencoding, Position};
 use log::error;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Metadata {
     pub announce: String,
     pub announce_list: Option<Vec<Vec<String>>>,
@@ -12,7 +12,7 @@ pub struct Metadata {
     pub encoding: Option<String>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Info {
     pub pieces_length: u32,
     pub pieces: Vec<Vec<u8>>,
@@ -21,13 +21,13 @@ pub struct Info {
     pub position: Position,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum ModeFile {
     Single { length: i64 },
     Multiple { files: Vec<FileInfo> },
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct FileInfo {
     pub length: i64,
     pub md5sum: Option<Vec<u8>>,
