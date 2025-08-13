@@ -3,7 +3,7 @@ use log::{debug, error};
 
 use std::{collections::HashMap, net::Ipv4Addr};
 
-use crate::peer::{Peer, StoredPiece};
+use crate::peer::Peer;
 
 pub struct Filer {
     pieces: HashMap<u32, Vec<u8>>,
@@ -41,12 +41,13 @@ impl Handler<PieceRequest> for Filer {
                 let block =
                     piece_bytes[msg.begin as usize..(msg.begin + msg.length) as usize].to_vec();
 
-                let piece = StoredPiece {
+                /*let piece = StoredPiece {
                     index: msg.index,
                     begin: msg.begin,
                     block,
                 };
-                msg.peer_addr.do_send(piece);
+                msg.peer_addr.do_send(piece);*/
+                unimplemented!()
             }
             None => {
                 error!("Requested piece {} but don't have it yet", msg.index);

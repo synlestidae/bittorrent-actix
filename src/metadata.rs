@@ -204,3 +204,17 @@ fn parse_path(element: &Bencoding) -> Result<Vec<u8>, MetadataError> {
         _ => Err(MetadataError::InvalidPath),
     }
 }
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Piece {
+    pub index: u32,
+    pub begin: u32,
+    pub block: Vec<u8>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PieceRequest {
+    pub index: u32,
+    pub begin: u32,
+    pub length: u32,
+}

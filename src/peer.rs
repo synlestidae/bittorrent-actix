@@ -1,18 +1,17 @@
 use crate::coordinator::{Coordinator, PeerMessage};
-use crate::metadata::Info;
+use crate::metadata::{Info, Piece};
+use crate::piece_bucket::PieceBucket;
 use actix::prelude::*;
 use bitvec::vec::BitVec;
 use log::{debug, error, trace};
-use std::cmp::min;
 use std::collections::HashMap;
 use std::io;
 use std::io::Write;
 use std::net::Ipv4Addr;
 use std::net::TcpStream as StdTcpStream;
 use std::thread::JoinHandle;
-use std::time::Duration;
-use tokio::io::AsyncWriteExt;
 use tokio::io::AsyncReadExt;
+use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
 
 pub struct Peer {
@@ -23,8 +22,7 @@ pub struct Peer {
     read_loop: Option<JoinHandle<()>>,
     assigned_pieces: BitVec,
     info: Info,
-    pieces: HashMap<u32, Vec<StoredPiece>>,
-    pieces_we_requested: Vec<RequestedPiece>,
+    pieces: PieceBucket,
 }
 
 #[derive(Clone)]
@@ -34,17 +32,7 @@ struct RequestedPiece {
     length: u32,
 }
 
-#[derive(Message)]
-#[rtype(result = "()")]
-pub struct StoredPiece {
-    pub index: u32,
-    pub begin: u32,
-    pub block: Vec<u8>,
-}
-
 const MAX_PIECE_REQUESTS: usize = 10;
-
-const PIECE_REQUEST_SIZE: u32 = 16_384;
 
 impl Peer {
     pub fn new(
@@ -61,8 +49,7 @@ impl Peer {
             read_loop: None,
             assigned_pieces: BitVec::repeat(false, info.pieces.len()),
             info: info.clone(),
-            pieces: HashMap::new(),
-            pieces_we_requested: Vec::new(),
+            pieces: PieceBucket::new(info.pieces_length),
         }
     }
 
@@ -101,24 +88,25 @@ impl Peer {
                 Ok(tcp_stream)
             }
             .into_actor(self)
-            .map(move |tcp_stream_result, actor, ctx| match tcp_stream_result {
-                Ok(tcp_stream) => {
-                    let std_tcp_stream = tcp_stream.into_std().unwrap();
-                    let tcp_stream_read = clone_std_tcp_stream(&std_tcp_stream);
+            .map(
+                move |tcp_stream_result, actor, ctx| match tcp_stream_result {
+                    Ok(tcp_stream) => {
+                        let std_tcp_stream = tcp_stream.into_std().unwrap();
+                        let tcp_stream_read = clone_std_tcp_stream(&std_tcp_stream);
 
-                    ctx.spawn(read_loop(tcp_stream_read, ctx.address()).into_actor(actor));
+                        ctx.spawn(read_loop(tcp_stream_read, ctx.address()).into_actor(actor));
 
-                    actor.tcp_stream = Some(std_tcp_stream);
+                        actor.tcp_stream = Some(std_tcp_stream);
 
+                        Ok(())
+                    }
+                    Err(err) => {
+                        error!("Error connecting to {}:{} - {:?}", ip_address, port, err);
 
-                    Ok(())
-                }
-                Err(err) => {
-                    error!("Error connecting to {}:{} - {:?}", ip_address, port, err);
-
-                    Err(err)
+                        Err(err)
+                    }
                 },
-            }),
+            ),
         );
     }
 
@@ -163,7 +151,10 @@ impl Handler<Handshake> for Peer {
     fn handle(&mut self, msg: Handshake, _ctx: &mut Context<Self>) -> Self::Result {
         debug!("Received Handshake");
 
-        self.handshake(BittorrentHandshake { info_hash: msg.info_hash, peer_id: msg.peer_id })
+        self.handshake(BittorrentHandshake {
+            info_hash: msg.info_hash,
+            peer_id: msg.peer_id,
+        })
 
         /*return Box::pin(
             async move {
@@ -487,7 +478,7 @@ impl Handler<AssignPieces> for Peer {
     fn handle(&mut self, msg: AssignPieces, _ctx: &mut Context<Self>) -> Self::Result {
         self.assigned_pieces = msg.assigned_pieces;
 
-        if self.pieces_we_requested.len() >= MAX_PIECE_REQUESTS {
+        /*if self.pieces_we_requested.len() >= MAX_PIECE_REQUESTS {
             return Ok(());
         }
 
@@ -550,70 +541,14 @@ impl Handler<AssignPieces> for Peer {
                 tcp_stream.write_all(&message.serialize())?;
                 self.pieces_we_requested.push(missing_piece);
             }
-        }
+        }*/
 
-        Ok(())
+        //Ok(())
+        unimplemented!()
     }
 }
 
-fn get_missing_pieces(
-    pieces_we_requested: &[RequestedPiece],
-    stored_pieces: &[StoredPiece],
-    piece_length: u32,
-) -> Vec<RequestedPiece> {
-    let mut pieces: Vec<RequestedPiece> = stored_pieces
-        .iter()
-        .map(|stored_piece| RequestedPiece {
-            index: stored_piece.index,
-            begin: stored_piece.begin,
-            length: stored_piece.block.len() as u32,
-        })
-        .chain(pieces_we_requested.iter().cloned())
-        .collect();
-
-    pieces
-        .sort_by(|piece0, piece1| (piece0.index, piece1.begin).cmp(&(piece1.index, piece1.begin)));
-
-    let mut new_pieces = Vec::new();
-
-    for i in 0..pieces.len() - 1 {
-        let piece0 = &pieces[i];
-        let piece1 = &pieces[i + 1];
-
-        if piece0.index == piece1.index && piece0.begin + piece0.length < piece1.begin {
-            let mut gap = fill_gap(piece0, piece1.begin, piece_length);
-            new_pieces.append(&mut gap);
-        }
-
-        if piece0.index != piece1.index && piece0.begin + piece0.length < piece_length {
-            let mut gap = fill_gap(piece0, piece_length, piece_length);
-            new_pieces.append(&mut gap);
-        }
-    }
-
-    new_pieces
-}
-
-fn fill_gap(piece0: &RequestedPiece, until_offset: u32, piece_length: u32) -> Vec<RequestedPiece> {
-    let mut new_pieces = Vec::new();
-    let mut offset: u32 = piece0.begin;
-    let length = min(PIECE_REQUEST_SIZE, piece_length);
-
-    // Add pieces until gap closes
-    while offset < until_offset {
-        new_pieces.push(RequestedPiece {
-            index: piece0.index,
-            begin: offset,
-            length,
-        });
-
-        offset += PIECE_REQUEST_SIZE;
-    }
-
-    return new_pieces;
-}
-
-impl Handler<StoredPiece> for Peer {
+/*impl Handler<StoredPiece> for Peer {
     type Result = ();
 
     fn handle(&mut self, msg: StoredPiece, ctx: &mut Context<Self>) -> Self::Result {
@@ -632,4 +567,4 @@ impl Handler<StoredPiece> for Peer {
             }
         }
     }
-}
+}*/

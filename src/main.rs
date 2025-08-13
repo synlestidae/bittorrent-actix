@@ -17,6 +17,7 @@ mod filer;
 mod init;
 mod metadata;
 mod peer;
+mod piece_bucket;
 mod tracker;
 
 use crate::bencoding::{Bencoding, Position};

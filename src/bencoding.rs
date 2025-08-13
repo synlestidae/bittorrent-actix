@@ -225,7 +225,7 @@ fn peek_char<R: Read>(reader: &mut BufReader<R>) -> Option<char> {
 
 #[cfg(test)]
 mod test {
-    use crate::bencoding::Bencoding;
+    use crate::bencoding::{Bencoding, Position};
     use std::io::{BufReader, Cursor, Seek};
 
     #[test]
@@ -235,7 +235,11 @@ mod test {
         assert_eq!(
             Bencoding::deserialize(&mut cursor),
             Ok(Bencoding::ByteString {
-                byte_string: "spam".as_bytes().to_vec()
+                byte_string: "spam".as_bytes().to_vec(),
+                position: Some(Position {
+                    offset: 0,
+                    length: 4
+                })
             })
         );
         assert_eq!(
@@ -250,7 +254,13 @@ mod test {
 
         assert_eq!(
             Bencoding::deserialize(&mut cursor),
-            Ok(Bencoding::Integer { integer: 3 })
+            Ok(Bencoding::Integer {
+                integer: 3,
+                position: Some(Position {
+                    offset: 0,
+                    length: 4
+                })
+            })
         );
         assert_eq!(
             cursor.stream_position().unwrap(),
@@ -264,7 +274,13 @@ mod test {
 
         assert_eq!(
             Bencoding::deserialize(&mut cursor),
-            Ok(Bencoding::Integer { integer: -3 })
+            Ok(Bencoding::Integer {
+                integer: -3,
+                position: Some(Position {
+                    offset: 0,
+                    length: 4
+                })
+            })
         );
         assert_eq!(
             cursor.stream_position().unwrap(),
@@ -278,7 +294,13 @@ mod test {
 
         assert_eq!(
             Bencoding::deserialize(&mut cursor),
-            Ok(Bencoding::List { list: Vec::new() })
+            Ok(Bencoding::List {
+                list: Vec::new(),
+                position: Some(Position {
+                    offset: 0,
+                    length: 2
+                })
+            })
         );
         assert_eq!(
             cursor.stream_position().unwrap(),
@@ -292,10 +314,28 @@ mod test {
 
         assert_eq!(
             Bencoding::deserialize(&mut cursor),
-            Ok(Bencoding::List(vec![
-                Bencoding::ByteString("spam".as_bytes().to_vec()),
-                Bencoding::ByteString("eggs".as_bytes().to_vec())
-            ]))
+            Ok(Bencoding::List {
+                list: vec![
+                    Bencoding::ByteString {
+                        byte_string: "spam".as_bytes().to_vec(),
+                        position: Some(Position {
+                            offset: 0,
+                            length: 0,
+                        })
+                    },
+                    Bencoding::ByteString {
+                        byte_string: "eggs".as_bytes().to_vec(),
+                        position: Some(Position {
+                            offset: 0,
+                            length: 0,
+                        })
+                    },
+                ],
+                position: Some(Position {
+                    offset: 0,
+                    length: 0,
+                })
+            })
         );
         assert_eq!(
             cursor.stream_position().unwrap(),
