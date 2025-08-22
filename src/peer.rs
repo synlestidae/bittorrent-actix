@@ -1,28 +1,27 @@
 use crate::coordinator::{Coordinator, PeerMessage};
-use crate::metadata::{Info, Piece};
-use crate::piece_bucket::PieceBucket;
+use crate::metadata::Info;
+use crate::piece_tracker::PieceTracker;
 use actix::prelude::*;
-use bitvec::vec::BitVec;
 use log::{debug, error, trace};
-use std::collections::HashMap;
 use std::io;
-use std::io::Write;
 use std::net::Ipv4Addr;
-use std::net::TcpStream as StdTcpStream;
-use std::thread::JoinHandle;
 use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
+use tokio::net::tcp::OwnedWriteHalf;
+use tokio_util::bytes::BytesMut;
+use tokio_util::codec::{Decoder, FramedRead};
 
 pub struct Peer {
     ip_address: Ipv4Addr,
     port: u16,
     coordinator_addr: Addr<Coordinator>,
-    tcp_stream: Option<StdTcpStream>,
-    read_loop: Option<JoinHandle<()>>,
-    assigned_pieces: BitVec,
+    write_half: Option<OwnedWriteHalf>,
+    assigned_pieces: Vec<u32>,
     info: Info,
-    pieces: PieceBucket,
+    pieces: PieceTracker,
+    //assigned_pieces: BitVec,
+    //have_pieces: BitVec,
 }
 
 #[derive(Clone)]
@@ -45,11 +44,11 @@ impl Peer {
             ip_address,
             port,
             coordinator_addr,
-            tcp_stream: None,
-            read_loop: None,
-            assigned_pieces: BitVec::repeat(false, info.pieces.len()),
+            write_half: None,
             info: info.clone(),
-            pieces: PieceBucket::new(info.pieces_length),
+            assigned_pieces: vec![],
+            pieces: PieceTracker::new(info.pieces_length),
+            //have_pieces: BitVec::repeat(false, info.pieces.len()),
         }
     }
 
@@ -60,7 +59,7 @@ impl Peer {
         let ip_address = self.ip_address;
         let port = self.port;
 
-        return Box::pin(
+        Box::pin(
             async move {
                 let mut tcp_stream = TcpStream::connect(&(ip_address, port)).await?;
 
@@ -91,12 +90,9 @@ impl Peer {
             .map(
                 move |tcp_stream_result, actor, ctx| match tcp_stream_result {
                     Ok(tcp_stream) => {
-                        let std_tcp_stream = tcp_stream.into_std().unwrap();
-                        let tcp_stream_read = clone_std_tcp_stream(&std_tcp_stream);
-
-                        ctx.spawn(read_loop(tcp_stream_read, ctx.address()).into_actor(actor));
-
-                        actor.tcp_stream = Some(std_tcp_stream);
+                        let (read_half, write_half) = tcp_stream.into_split();
+                        ctx.add_stream(FramedRead::new(read_half, BittorrentCodec));
+                        actor.write_half = Some(write_half);
 
                         Ok(())
                     }
@@ -107,38 +103,41 @@ impl Peer {
                     }
                 },
             ),
-        );
+        )
     }
 
-    fn socket(&self) -> Result<TcpStream, NetworkError> {
-        if let Some(std_tcp_stream) = &self.tcp_stream {
-            return Ok(TcpStream::from_std(std_tcp_stream.try_clone().unwrap()).unwrap());
-        }
+    fn request_pieces(&mut self) -> ResponseActFuture<Self, Result<(), NetworkError>> {
+        let messages: Vec<_> = self
+            .pieces
+            .next_pieces(&self.assigned_pieces, MAX_PIECE_REQUESTS)
+            .into_iter()
+            .map(|piece_request| BittorrentMessage::Request {
+                index: piece_request.index,
+                begin: piece_request.begin,
+                length: piece_request.length,
+            })
+            .collect();
 
-        Err(NetworkError::NotConnected)
+        Box::pin(
+            match self.write_half.take() {
+                Some(mut write_half) => {
+                    async move {
+                        debug!("Sending {} message(s)", messages.len());
+                        for msg in messages.into_iter() {
+                            write_half.write_all(&msg.serialize()).await?;
+                        }
+
+                        Ok(())
+                    }
+                }
+                None => unimplemented!("Never mind") 
+            }
+            .into_actor(self),
+        )
     }
 }
 
-impl Actor for Peer {
-    type Context = Context<Self>;
-
-    fn stopped(&mut self, _ctx: &mut Self::Context) {
-        debug!("Removing peer {}:{}", self.ip_address, self.port);
-
-        if let Some(Err(err)) = self
-            .tcp_stream
-            .take()
-            .map(|tcp_stream| tcp_stream.shutdown(std::net::Shutdown::Both))
-        {
-            error!("Error shutting down stream: {}", err);
-        }
-        if let Some(Err(err)) = self.read_loop.take().map(|join_handle| join_handle.join()) {
-            error!("Error shutting down read loop: {:?}", err);
-        }
-    }
-}
-
-#[derive(Message)]
+#[derive(Message, Debug)]
 #[rtype(result = "Result<(), NetworkError>")]
 pub struct Handshake {
     pub info_hash: [u8; 20],
@@ -155,99 +154,19 @@ impl Handler<Handshake> for Peer {
             info_hash: msg.info_hash,
             peer_id: msg.peer_id,
         })
-
-        /*return Box::pin(
-            async move {
-                let tcp_stream =
-                    TcpStream::connect_timeout(&(ip_address, port).into(), default_timeout)?;
-                tcp_stream.set_nonblocking(true);
-
-                Ok(tcp_stream)
-            }
-            .into_actor(self)
-            .map(move |result: Result<TcpStream, NetworkError>, _, ctx| {
-                let addr = ctx.address();
-                match result {
-                    Ok(tcp_stream) => {
-                        read_loop(tcp_stream.try_clone().unwrap(), addr);
-
-                        debug!("Peer {}:{} is ready", ip_address, port);
-
-                        coordinator_addr.do_send(HandshakeEnd {
-                            ip_address: ip_address,
-                            port: port,
-                            error: None,
-                        });
-                    }
-                    Err(err) => {
-                        coordinator_addr.do_send(HandshakeEnd {
-                            ip_address: ip_address,
-                            port: port,
-                            error: Some(err.into()),
-                        });
-
-                        error!("Error connecting to peer {}:{}", ip_address, port);
-                    }
-                }
-            }),
-        );*/
     }
+}
+
+#[derive(Message)]
+#[rtype(result = "Result<(), NetworkError>")]
+pub struct SendMessage {
+    pub msg: BittorrentMessage,
 }
 
 #[derive(Message)]
 #[rtype(result = "()")]
 pub struct RecvMessage {
-    bittorrent_message: BittorrentMessage,
-}
-
-impl Handler<RecvMessage> for Peer {
-    type Result = ();
-
-    fn handle(&mut self, msg: RecvMessage, _ctx: &mut Context<Self>) -> Self::Result {
-        self.coordinator_addr.do_send(PeerMessage {
-            ip_address: self.ip_address,
-            port: self.port,
-            bittorrent_message: msg.bittorrent_message,
-        });
-    }
-}
-
-async fn read_loop(mut tcp_stream: TcpStream, addr: Addr<Peer>) {
-    loop {
-        let mut bytes = vec![0u8; 4];
-        tcp_stream.read_exact(&mut bytes).await.unwrap();
-        let len = u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as usize;
-        bytes.resize(len + 4, 0u8);
-
-        trace!("Reading message of length {}", len);
-
-        match tcp_stream.read_exact(&mut bytes[4..len]).await {
-            Ok(b) => {
-                debug!("Read {} bytes", b);
-            }
-            Err(err) => {
-                error!("Read error: {}", err);
-                return;
-            }
-        };
-        let bittorrent_message = match BittorrentMessage::deserialize(&bytes) {
-            Ok(m) => m,
-            Err(err) => {
-                error!("Peer message error: {:?}", err);
-                return;
-            }
-        };
-
-        trace!("Got message {:?}", bittorrent_message);
-        addr.do_send(RecvMessage { bittorrent_message });
-
-        return;
-    }
-}
-
-fn clone_std_tcp_stream(tcp_stream: &StdTcpStream) -> TcpStream {
-    let std_stream = tcp_stream.try_clone().unwrap();
-    TcpStream::from_std(std_stream).unwrap()
+    pub msg: BittorrentMessage,
 }
 
 #[derive(Message, Debug)]
@@ -257,35 +176,75 @@ pub struct HavePiece {
 }
 
 impl Handler<HavePiece> for Peer {
-    type Result = Result<(), NetworkError>;
+    type Result = ResponseActFuture<Self, Result<(), NetworkError>>;
 
     fn handle(&mut self, msg: HavePiece, _ctx: &mut Context<Self>) -> Self::Result {
-        let bittorrent_message = BittorrentMessage::Have {
+        let msg = BittorrentMessage::Have {
             piece_index: msg.piece_index,
         };
+        let bytes = msg.serialize();
+        match self.write_half.take() {
+            Some(mut write_half) => Box::pin(
+                async move {
+                    write_half.write_all(&bytes).await?;
+                    Ok(())
+                }
+                .into_actor(self),
+            ),
+            None => Box::pin(async { Ok(()) }.into_actor(self)),
+        }
+    }
+}
 
-        match self.tcp_stream {
-            Some(ref mut tcp_stream) => {
-                tcp_stream.write_all(&bittorrent_message.serialize())?;
-            }
-            None => {
-                panic!("No connection available");
-            }
-        };
+impl Handler<RecvMessage> for Peer {
+    type Result = ResponseActFuture<Self, ()>;
 
-        Ok(())
+    fn handle(&mut self, msg: RecvMessage, _ctx: &mut Context<Self>) -> Self::Result {
+        debug!("Received RecvMessage");
+        let ip_address = self.ip_address;
+        let port = self.port;
+        let coordinator_addr = self.coordinator_addr.clone();
+
+        if let BittorrentMessage::Choke = msg.msg {
+            self.pieces.clear_requests();
+        }
+
+        Box::pin(
+            async move {
+                match coordinator_addr
+                    .send(PeerMessage {
+                        msg: msg.msg,
+                        ip_address,
+                        port,
+                    })
+                    .await
+                {
+                    Ok(_) => (),
+                    Err(err) => {
+                        error!("Error sending peer message to coordinator: {}", err);
+                    }
+                }
+            }
+            .into_actor(self),
+        )
     }
 }
 
 #[derive(Debug)]
 pub enum NetworkError {
     IOErr(io::Error),
-    NotConnected,
+    BittorrentMessageErr(BittorrentMessageError),
 }
 
 impl From<io::Error> for NetworkError {
     fn from(err: io::Error) -> Self {
         NetworkError::IOErr(err)
+    }
+}
+
+impl From<BittorrentMessageError> for NetworkError {
+    fn from(err: BittorrentMessageError) -> Self {
+        NetworkError::BittorrentMessageErr(err)
     }
 }
 
@@ -459,7 +418,7 @@ impl BittorrentMessage {
                 v.push(7);
                 v.extend_from_slice(&index.to_be_bytes());
                 v.extend_from_slice(&begin.to_be_bytes());
-                v.extend_from_slice(&block);
+                v.extend_from_slice(block);
                 v
             }
         }
@@ -469,7 +428,7 @@ impl BittorrentMessage {
 #[derive(Message)]
 #[rtype(result = "Result<(), NetworkError>")]
 pub struct AssignPieces {
-    pub assigned_pieces: BitVec,
+    pub assigned_pieces: Vec<u32>,
 }
 
 impl Handler<AssignPieces> for Peer {
@@ -478,93 +437,57 @@ impl Handler<AssignPieces> for Peer {
     fn handle(&mut self, msg: AssignPieces, _ctx: &mut Context<Self>) -> Self::Result {
         self.assigned_pieces = msg.assigned_pieces;
 
-        /*if self.pieces_we_requested.len() >= MAX_PIECE_REQUESTS {
-            return Ok(());
-        }
-
-        let tcp_stream = match &mut self.tcp_stream {
-            Some(tcp_stream) => tcp_stream,
-            None => panic!("Missing TCP stream"),
-        };
-
-        // work out which existing pieces need a request
-        let pieces_can_finish: Vec<u32> = self
-            .pieces_we_requested
-            .iter()
-            .map(|p| match self.assigned_pieces.get(p.index as usize) {
-                Some(b) => (p.index, *b),
-                None => (p.index, false),
-            })
-            .filter(|(_, b)| *b)
-            .map(|(i, _)| i)
-            .collect();
-
-        for piece_index in pieces_can_finish.iter() {
-            let stored_pieces = self.pieces.get(piece_index).unwrap();
-            let missing_pieces = get_missing_pieces(
-                &self.pieces_we_requested,
-                stored_pieces,
-                self.info.pieces_length,
-            );
-
-            for missing_piece in missing_pieces.into_iter() {
-                if self.pieces_we_requested.len() >= MAX_PIECE_REQUESTS {
-                    return Ok(());
-                }
-                let message = BittorrentMessage::Request {
-                    index: missing_piece.index,
-                    begin: missing_piece.begin,
-                    length: missing_piece.length,
-                };
-                tcp_stream.write_all(&message.serialize())?;
-                self.pieces_we_requested.push(missing_piece);
-            }
-        }
-        // work out which new pieces to request
-        for piece_index in 0..self.assigned_pieces.len() {
-            let stored_pieces = self.pieces.get(&(piece_index as u32)).unwrap();
-            let missing_pieces = get_missing_pieces(
-                &self.pieces_we_requested,
-                &stored_pieces,
-                PIECE_REQUEST_SIZE,
-            );
-
-            for missing_piece in missing_pieces.into_iter() {
-                if self.pieces_we_requested.len() >= MAX_PIECE_REQUESTS {
-                    return Ok(());
-                }
-                let message = BittorrentMessage::Request {
-                    index: missing_piece.index,
-                    begin: missing_piece.begin,
-                    length: missing_piece.length,
-                };
-                tcp_stream.write_all(&message.serialize())?;
-                self.pieces_we_requested.push(missing_piece);
-            }
-        }*/
-
-        //Ok(())
-        unimplemented!()
+        Ok(())
     }
 }
 
-/*impl Handler<StoredPiece> for Peer {
-    type Result = ();
+struct BittorrentCodec;
 
-    fn handle(&mut self, msg: StoredPiece, ctx: &mut Context<Self>) -> Self::Result {
-        let bittorrent_message = BittorrentMessage::Piece {
-            index: msg.index,
-            begin: msg.begin,
-            block: msg.block,
-        };
-        let bytes = bittorrent_message.serialize();
+impl Decoder for BittorrentCodec {
+    type Item = BittorrentMessage;
+    type Error = NetworkError;
 
-        if let Some(ref mut tcp_stream) = self.tcp_stream {
-            let result = tcp_stream.write_all(&bytes);
-            if let Err(err) = result {
-                error!("Error writing piece: {}", err);
-                ctx.stop();
+    fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
+        // check we have enough bytes
+        if src.len() < 4 {
+            trace!("Have {} bytes so do not know length", src.len());
+            return Ok(None);
+        }
+        let len = u32::from_be_bytes([src[0], src[1], src[2], src[3]]);
+        let total_len = len as usize + 4;
+        if src.len() < total_len {
+            trace!("Have {} bytes but need at least{}", src.len(), total_len);
+
+            return Ok(None);
+        }
+
+        // read the message
+        let msg = BittorrentMessage::deserialize(&src.split_to(total_len).to_vec())?;
+        Ok(Some(msg))
+    }
+}
+
+impl StreamHandler<Result<BittorrentMessage, NetworkError>> for Peer {
+    fn handle(
+        &mut self,
+        msg_result: Result<BittorrentMessage, NetworkError>,
+        ctx: &mut Self::Context,
+    ) {
+        match msg_result {
+            Err(err) => {
+                error!("Error receiving message: {:?}", err);
+            }
+            Ok(msg) => {
+                ctx.address().do_send(RecvMessage { msg });
             }
         }
     }
-}*/
+}
+
+impl Actor for Peer {
+    type Context = Context<Self>;
+
+    fn stopped(&mut self, _ctx: &mut Self::Context) {
+        debug!("Removing peer {}:{}", self.ip_address, self.port);
+    }
+}

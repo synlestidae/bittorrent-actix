@@ -15,7 +15,7 @@ impl Init {
     pub fn new(metadata: Metadata, info_hash: [u8; 20]) -> Self {
         let filer_addr = Filer::new().start();
         let coordinator_addr =
-            Coordinator::new(metadata.info.clone(), info_hash.clone(), filer_addr.clone()).start();
+            Coordinator::new(metadata.info.clone(), info_hash, filer_addr.clone()).start();
         let tracker_addr =
             Tracker::new(metadata, coordinator_addr, filer_addr.clone(), info_hash).start();
 

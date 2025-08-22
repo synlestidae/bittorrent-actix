@@ -5,7 +5,6 @@ use std::fs::File;
 use std::future::pending;
 use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::process::exit;
-use tokio::runtime::Builder;
 
 use env_logger::init;
 use log::{debug, info};
@@ -17,7 +16,8 @@ mod filer;
 mod init;
 mod metadata;
 mod peer;
-mod piece_bucket;
+mod peer_state;
+mod piece_tracker;
 mod tracker;
 
 use crate::bencoding::{Bencoding, Position};
@@ -84,7 +84,7 @@ fn get_info_hash(handle: &mut File, position: Position) -> [u8; 20] {
     let mut hasher = Sha1::new();
     hasher.update(buffer);
 
-    hasher.finalize().try_into().unwrap()
+    hasher.finalize().into()
 }
 
 struct Download {}

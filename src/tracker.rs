@@ -1,8 +1,7 @@
 use crate::bencoding::Bencoding;
-use crate::coordinator::{self, Coordinator, TrackerUpdate};
+use crate::coordinator::{Coordinator, TrackerUpdate};
 use crate::filer::Filer;
 use crate::metadata::Metadata;
-use crate::peer::{Handshake, Peer};
 use actix::prelude::*;
 use log::{debug, error};
 use percent_encoding::{NON_ALPHANUMERIC, percent_encode};

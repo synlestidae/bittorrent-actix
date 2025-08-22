@@ -79,10 +79,10 @@ impl Metadata {
     }
 
     pub fn total_file_bytes(&self) -> u64 {
-        ((match &self.info.file_info {
+        (match &self.info.file_info {
             ModeFile::Single { length } => *length,
             ModeFile::Multiple { files } => files.iter().map(|f| f.length).sum(),
-        }) as u64)
+        }) as u64
     }
 }
 
