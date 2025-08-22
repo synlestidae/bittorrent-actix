@@ -3,7 +3,7 @@ use std::net::Ipv4Addr;
 
 use actix::prelude::*;
 use bitvec::prelude::*;
-use log::{debug, error, warn};
+use log::{debug, warn};
 use rand::RngCore;
 use tokio::task::JoinSet;
 
@@ -65,12 +65,12 @@ impl Handler<TrackerUpdate> for Coordinator {
 
         let info = self.info.clone();
         let info_for_peer = self.info.clone();
-        let info_hash = self.info_hash.clone();
+        let info_hash = self.info_hash;
         let address = ctx.address();
 
         debug!("Tracker gave us {} new peers", new_peers.len());
 
-        return Box::pin(
+        Box::pin(
             async move {
                 let mut joinset = JoinSet::new();
                 let mut peers = Vec::new();
@@ -84,7 +84,7 @@ impl Handler<TrackerUpdate> for Coordinator {
                     rand::rng().fill_bytes(&mut peer_id);
 
                     joinset.spawn(peer_addr.send(Handshake {
-                        info_hash: info_hash,
+                        info_hash,
                         peer_id,
                     }));
 
@@ -94,7 +94,7 @@ impl Handler<TrackerUpdate> for Coordinator {
                 let mut new_peers = Vec::new();
                 for (i, join_result) in joinset.join_all().await.into_iter().enumerate() {
                     let (ip_address, port, peer_addr) = &peers[i];
-                    if let Ok(_) = join_result {
+                    if join_result.is_ok() {
                         debug!("Successful handshake with peer {}:{}", ip_address, port);
                         new_peers.push((*ip_address, *port, peer_addr.clone()));
                     } else {
@@ -114,7 +114,7 @@ impl Handler<TrackerUpdate> for Coordinator {
                 }
                 Ok(())
             }),
-        );
+        )
     }
 }
 
@@ -134,8 +134,8 @@ impl Handler<PeerMessage> for Coordinator {
 
         peer_state.new_message(&msg.msg);
 
-        if let Some((peer_addr, state)) = self.peers.get(&(ip_address, port)) {
-            if let BittorrentMessage::Request {
+        if let Some((peer_addr, state)) = self.peers.get(&(ip_address, port))
+            && let BittorrentMessage::Request {
                 index,
                 begin,
                 length,
@@ -151,7 +151,6 @@ impl Handler<PeerMessage> for Coordinator {
                     peer_addr: peer_addr.clone(),
                 });
             }
-        }
     }
 }
 

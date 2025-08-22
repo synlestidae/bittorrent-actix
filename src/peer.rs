@@ -107,7 +107,7 @@ impl Peer {
         let messages: Vec<_> = self
             .pieces
             .next_pieces(&self.assigned_pieces, MAX_PIECE_REQUESTS)
-            .into_iter()
+            .iter()
             .map(|piece_request| BittorrentMessage::Request {
                 index: piece_request.index,
                 begin: piece_request.begin,
@@ -459,7 +459,7 @@ impl Decoder for BittorrentCodec {
         }
 
         // read the message
-        let msg = BittorrentMessage::deserialize(&src.split_to(total_len).to_vec())?;
+        let msg = BittorrentMessage::deserialize(&src.split_to(total_len))?;
         Ok(Some(msg))
     }
 }

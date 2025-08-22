@@ -55,14 +55,10 @@ impl PeerState {
     pub fn pieces_we_can_request(&self, we_have: &BitVec<u8, Msb0>) -> Vec<u32> {
         let mut can_request_pieces = vec![];
         for i in 0..we_have.len() {
-            match (we_have.get(i), self.they_have.get(i)) {
-                (Some(we_have_bit_ref), Some(they_have_bit_ref)) => {
-                    if *we_have_bit_ref && *they_have_bit_ref {
-                        can_request_pieces.push(i as u32);
-                    }
+            if let (Some(we_have_bit_ref), Some(they_have_bit_ref)) = (we_have.get(i), self.they_have.get(i))
+                && *we_have_bit_ref && *they_have_bit_ref {
+                    can_request_pieces.push(i as u32);
                 }
-                _ => (),
-            }
         }
 
         can_request_pieces
