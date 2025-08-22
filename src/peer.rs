@@ -20,8 +20,6 @@ pub struct Peer {
     assigned_pieces: Vec<u32>,
     info: Info,
     pieces: PieceTracker,
-    //assigned_pieces: BitVec,
-    //have_pieces: BitVec,
 }
 
 #[derive(Clone)]
@@ -48,14 +46,13 @@ impl Peer {
             info: info.clone(),
             assigned_pieces: vec![],
             pieces: PieceTracker::new(info.pieces_length),
-            //have_pieces: BitVec::repeat(false, info.pieces.len()),
         }
     }
 
     fn handshake(
         &self,
         handshake: BittorrentHandshake,
-    ) -> ResponseActFuture<Self, Result<(), NetworkError>> {
+    ) -> ResponseActFuture<Self, Result<(), PeerError>> {
         let ip_address = self.ip_address;
         let port = self.port;
 
@@ -106,7 +103,7 @@ impl Peer {
         )
     }
 
-    fn request_pieces(&mut self) -> ResponseActFuture<Self, Result<(), NetworkError>> {
+    fn request_pieces(&mut self) -> ResponseActFuture<Self, Result<(), PeerError>> {
         let messages: Vec<_> = self
             .pieces
             .next_pieces(&self.assigned_pieces, MAX_PIECE_REQUESTS)
@@ -138,14 +135,14 @@ impl Peer {
 }
 
 #[derive(Message, Debug)]
-#[rtype(result = "Result<(), NetworkError>")]
+#[rtype(result = "Result<(), PeerError>")]
 pub struct Handshake {
     pub info_hash: [u8; 20],
     pub peer_id: [u8; 20],
 }
 
 impl Handler<Handshake> for Peer {
-    type Result = ResponseActFuture<Self, Result<(), NetworkError>>;
+    type Result = ResponseActFuture<Self, Result<(), PeerError>>;
 
     fn handle(&mut self, msg: Handshake, _ctx: &mut Context<Self>) -> Self::Result {
         debug!("Received Handshake");
@@ -158,7 +155,7 @@ impl Handler<Handshake> for Peer {
 }
 
 #[derive(Message)]
-#[rtype(result = "Result<(), NetworkError>")]
+#[rtype(result = "Result<(), PeerError>")]
 pub struct SendMessage {
     pub msg: BittorrentMessage,
 }
@@ -170,13 +167,13 @@ pub struct RecvMessage {
 }
 
 #[derive(Message, Debug)]
-#[rtype(result = "Result<(), NetworkError>")]
+#[rtype(result = "Result<(), PeerError>")]
 pub struct HavePiece {
     pub piece_index: u32,
 }
 
 impl Handler<HavePiece> for Peer {
-    type Result = ResponseActFuture<Self, Result<(), NetworkError>>;
+    type Result = ResponseActFuture<Self, Result<(), PeerError>>;
 
     fn handle(&mut self, msg: HavePiece, _ctx: &mut Context<Self>) -> Self::Result {
         let msg = BittorrentMessage::Have {
@@ -231,20 +228,20 @@ impl Handler<RecvMessage> for Peer {
 }
 
 #[derive(Debug)]
-pub enum NetworkError {
+pub enum PeerError {
     IOErr(io::Error),
     BittorrentMessageErr(BittorrentMessageError),
 }
 
-impl From<io::Error> for NetworkError {
+impl From<io::Error> for PeerError {
     fn from(err: io::Error) -> Self {
-        NetworkError::IOErr(err)
+        PeerError::IOErr(err)
     }
 }
 
-impl From<BittorrentMessageError> for NetworkError {
+impl From<BittorrentMessageError> for PeerError {
     fn from(err: BittorrentMessageError) -> Self {
-        NetworkError::BittorrentMessageErr(err)
+        PeerError::BittorrentMessageErr(err)
     }
 }
 
@@ -426,13 +423,13 @@ impl BittorrentMessage {
 }
 
 #[derive(Message)]
-#[rtype(result = "Result<(), NetworkError>")]
+#[rtype(result = "Result<(), PeerError>")]
 pub struct AssignPieces {
     pub assigned_pieces: Vec<u32>,
 }
 
 impl Handler<AssignPieces> for Peer {
-    type Result = Result<(), NetworkError>;
+    type Result = Result<(), PeerError>;
 
     fn handle(&mut self, msg: AssignPieces, _ctx: &mut Context<Self>) -> Self::Result {
         self.assigned_pieces = msg.assigned_pieces;
@@ -445,7 +442,7 @@ struct BittorrentCodec;
 
 impl Decoder for BittorrentCodec {
     type Item = BittorrentMessage;
-    type Error = NetworkError;
+    type Error = PeerError;
 
     fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
         // check we have enough bytes
@@ -467,10 +464,10 @@ impl Decoder for BittorrentCodec {
     }
 }
 
-impl StreamHandler<Result<BittorrentMessage, NetworkError>> for Peer {
+impl StreamHandler<Result<BittorrentMessage, PeerError>> for Peer {
     fn handle(
         &mut self,
-        msg_result: Result<BittorrentMessage, NetworkError>,
+        msg_result: Result<BittorrentMessage, PeerError>,
         ctx: &mut Self::Context,
     ) {
         match msg_result {

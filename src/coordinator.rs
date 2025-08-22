@@ -9,7 +9,7 @@ use tokio::task::JoinSet;
 
 use crate::filer::{Filer, PieceRequest};
 use crate::metadata::Info;
-use crate::peer::{BittorrentMessage, Handshake, NetworkError, Peer};
+use crate::peer::{BittorrentMessage, Handshake, PeerError, Peer};
 use crate::peer_state::PeerState;
 use crate::tracker::TrackerResponse;
 
@@ -38,7 +38,7 @@ impl Actor for Coordinator {
 }
 
 #[derive(Message)]
-#[rtype(result = "Result<(), NetworkError>")]
+#[rtype(result = "Result<(), PeerError>")]
 pub struct TrackerUpdate {
     pub tracker_response: TrackerResponse,
 }
@@ -52,7 +52,7 @@ pub struct PeerMessage {
 }
 
 impl Handler<TrackerUpdate> for Coordinator {
-    type Result = ResponseActFuture<Self, Result<(), NetworkError>>;
+    type Result = ResponseActFuture<Self, Result<(), PeerError>>;
 
     fn handle(&mut self, msg: TrackerUpdate, ctx: &mut Context<Self>) -> Self::Result {
         debug!("Received TrackerUpdate");
