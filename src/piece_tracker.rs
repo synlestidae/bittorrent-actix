@@ -1,5 +1,8 @@
 use std::cmp::min;
 
+use log::trace;
+use ureq::trace;
+
 use crate::metadata::{Piece, PieceRequest};
 
 #[derive(Debug)]
@@ -20,7 +23,54 @@ impl PieceTracker {
         }
     }
 
+    pub fn add(&mut self, piece: Piece) {
+        self.pieces.push(piece);
+    }
+
+    pub fn remove(&mut self, piece_index: u32) {
+        self.pieces.retain(|p| p.index != piece_index);
+    }
+
+    pub fn is_complete(&self, piece_index: u32) -> bool {
+        let mut pieces: Vec<_> = self
+            .pieces
+            .iter()
+            .filter(|p| p.index == piece_index)
+            .collect();
+        pieces.sort_by_key(|p| p.begin);
+        if pieces.len() == 0 {
+            return false;
+        }
+
+        let mut piece = pieces[0];
+        for next_piece in pieces.into_iter() {
+            if !(piece.begin + piece.block.len() as u32 >= next_piece.begin) {
+                return false;
+            }
+            piece = next_piece;
+        }
+
+        true
+    }
+
+    pub fn get_piece(&self, piece_index: u32) -> Vec<u8> {
+        let mut piece = vec![0u8; self.piece_length as usize];
+        for sub_piece in self.pieces.iter().filter(|p| p.index == piece_index) {
+            let start = sub_piece.begin as usize;
+            let end = start + sub_piece.block.len();
+            for i in start..end {
+                piece[i] = sub_piece.block[i];
+            }
+        }
+
+        piece
+    }
+
     pub fn next_pieces(&mut self, assigned_piece_indexes: &[u32], max: usize) -> &[PieceRequest] {
+        trace!(
+            "Working out next messages for {} assigned piece(s)",
+            assigned_piece_indexes.len()
+        );
         let mut pieces: Vec<PieceRequest> = self
             .pieces
             .iter()
@@ -36,6 +86,8 @@ impl PieceTracker {
             (piece0.index, piece1.begin).cmp(&(piece1.index, piece1.begin))
         });
 
+        trace!("Have {} pieces already", pieces.len());
+
         let mut new_pieces = Vec::new();
 
         if !pieces.is_empty() {
@@ -46,6 +98,7 @@ impl PieceTracker {
                 // fill gap between same piece indexes
                 if piece0.index == piece1.index && piece0.begin + piece0.length < piece1.begin {
                     let mut gap = fill_gap(piece0, piece1.begin, max);
+                    trace!("Filling gap in same piece with {} piece(s)", gap.len());
                     new_pieces.append(&mut gap);
                 }
 
@@ -53,6 +106,7 @@ impl PieceTracker {
                 if piece0.index != piece1.index && piece0.begin + piece0.length < self.piece_length
                 {
                     let mut gap = fill_gap(piece0, piece1.begin, max);
+                    trace!("Filling gap between pieces with {} piece(s)", gap.len());
                     new_pieces.append(&mut gap);
                 }
             }
@@ -61,7 +115,14 @@ impl PieceTracker {
         // new_pieces will be empty if we do not have any pieces whatsoever
         // in that case, seed a piece and fill
         if new_pieces.len() < max {
+            trace!(
+                "Filling up to {} piece(s) from up to {} for {} piece(s)",
+                new_pieces.len(),
+                max,
+                assigned_piece_indexes.len()
+            );
             for piece_index in assigned_piece_indexes.iter() {
+                trace!("Starting with piece {}", *piece_index);
                 let piece = PieceRequest {
                     index: *piece_index,
                     begin: 0,
@@ -69,9 +130,12 @@ impl PieceTracker {
                 };
                 let mut gap = fill_gap(&piece, self.piece_length, max);
                 gap.insert(0, piece);
+                trace!("Filled gap with {} piece(s)", gap.len());
                 new_pieces.append(&mut gap);
             }
         }
+
+        trace!("{} new pieces", new_pieces.len());
 
         let new_piece_count = new_pieces.len();
         let total_piece_count = new_pieces.len();
@@ -110,6 +174,10 @@ pub fn fill_gap(piece0: &PieceRequest, until_offset: u32, max: usize) -> Vec<Pie
             begin: offset,
             length,
         });
+
+        if new_pieces.len() >= max {
+            return new_pieces;
+        }
 
         offset += length;
 

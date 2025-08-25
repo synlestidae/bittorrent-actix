@@ -1,27 +1,34 @@
 use bitvec::{order::Msb0, vec::BitVec};
 
-use crate::{metadata::Info, peer::BittorrentMessage};
+use crate::{
+    metadata::{Info, PieceRequest},
+    peer::BittorrentMessage,
+};
 
 pub struct PeerState {
-    they_have: BitVec<u8, Msb0>,
-    choking_them: bool,
-    choking_us: bool,
-    interested_them: bool,
-    interested_us: bool,
-    assigned_pieces: BitVec,
-    pieces_received: usize,
+    pub handshake: bool,
+    pub they_have: BitVec<u8, Msb0>,
+    pub them_choking: bool,
+    pub them_interested: bool,
+    pub us_choking: bool,
+    pub us_interested: bool,
+    pub assigned_pieces: Vec<u32>,
+    pub pieces_received: usize,
+    pub cancels: Vec<PieceRequest>,
 }
 
 impl PeerState {
     pub fn new(info: &Info) -> Self {
         Self {
+            handshake: false,
             they_have: BitVec::repeat(false, info.pieces.len()),
-            choking_them: false,
-            choking_us: false,
-            interested_them: false,
-            interested_us: false,
-            assigned_pieces: BitVec::repeat(false, info.pieces.len()),
+            them_choking: false,
+            them_interested: false,
+            us_choking: false,
+            us_interested: false,
+            assigned_pieces: Vec::new(),
             pieces_received: 0,
+            cancels: Vec::new(),
         }
     }
 
@@ -31,16 +38,16 @@ impl PeerState {
                 // Do nothing
             }
             BittorrentMessage::Choke => {
-                self.choking_us = true;
+                self.them_choking = true;
             }
             BittorrentMessage::Unchoke => {
-                self.choking_us = false;
+                self.them_choking = false;
             }
             BittorrentMessage::Interested => {
-                self.interested_them = true;
+                self.them_interested = true;
             }
             BittorrentMessage::NotInterested => {
-                self.interested_us = false;
+                self.them_interested = false;
             }
             BittorrentMessage::Have { piece_index } => {
                 self.they_have.set(*piece_index as usize, true);
@@ -52,19 +59,11 @@ impl PeerState {
         };
     }
 
-    pub fn pieces_we_can_request(&self, we_have: &BitVec<u8, Msb0>) -> Vec<u32> {
-        let mut can_request_pieces = vec![];
-        for i in 0..we_have.len() {
-            if let (Some(we_have_bit_ref), Some(they_have_bit_ref)) = (we_have.get(i), self.they_have.get(i))
-                && *we_have_bit_ref && *they_have_bit_ref {
-                    can_request_pieces.push(i as u32);
-                }
-        }
-
-        can_request_pieces
+    pub fn assigned_pieces(&self) -> Vec<u32> {
+        self.assigned_pieces.clone()
     }
 
-    pub fn are_choking_them(&self) -> bool {
-        self.choking_them
+    pub fn assign_pieces(&mut self, assigned_pieces: Vec<u32>) {
+        self.assigned_pieces = assigned_pieces;
     }
 }

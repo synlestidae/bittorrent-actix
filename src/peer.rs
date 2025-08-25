@@ -1,16 +1,17 @@
 use crate::coordinator::{Coordinator, PeerMessage};
-use crate::metadata::Info;
+use crate::metadata::{Info, Piece};
 use crate::piece_tracker::PieceTracker;
+use actix::io::{FramedWrite, WriteHandler};
 use actix::prelude::*;
 use log::{debug, error, trace};
+use std::cmp::max;
 use std::io;
 use std::net::Ipv4Addr;
-use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
 use tokio::net::tcp::OwnedWriteHalf;
 use tokio_util::bytes::BytesMut;
-use tokio_util::codec::{Decoder, FramedRead};
+use tokio_util::codec::{Decoder, Encoder, FramedRead};
 
 pub struct Peer {
     ip_address: Ipv4Addr,
@@ -20,6 +21,12 @@ pub struct Peer {
     assigned_pieces: Vec<u32>,
     info: Info,
     pieces: PieceTracker,
+    writer: FramedWrite<BittorrentMessage, OwnedWriteHalf, BittorrentCodec>,
+    choking: bool,
+    interested: bool,
+    peer_id: [u8; 20],
+    info_hash: [u8; 20],
+    pending_requests: isize,
 }
 
 #[derive(Clone)]
@@ -37,120 +44,86 @@ impl Peer {
         port: u16,
         coordinator_addr: Addr<Coordinator>,
         info: &Info,
+        info_hash: [u8; 20],
+        peer_id: [u8; 20],
+        ctx: &mut Context<Self>,
+        tcp_stream: TcpStream,
     ) -> Self {
+        let (read_half, write_half) = tcp_stream.into_split();
+        let codec = BittorrentCodec {
+            handshake_sent: false,
+            handshake_received: false,
+            info_hash: info_hash.clone(),
+            peer_id: peer_id.clone(),
+        };
+        ctx.add_stream(FramedRead::new(read_half, codec.clone()));
+        let writer = FramedWrite::new(write_half, codec, ctx);
+
         Self {
             ip_address,
             port,
             coordinator_addr,
             write_half: None,
-            info: info.clone(),
             assigned_pieces: vec![],
             pieces: PieceTracker::new(info.pieces_length),
+            writer,
+            choking: false,
+            interested: false,
+            info: info.clone(),
+            info_hash,
+            peer_id,
+            pending_requests: 0,
         }
     }
 
-    fn handshake(
-        &self,
-        handshake: BittorrentHandshake,
-    ) -> ResponseActFuture<Self, Result<(), PeerError>> {
-        let ip_address = self.ip_address;
-        let port = self.port;
+    pub fn send_next_messages(&mut self) {
+        let max = max(MAX_PIECE_REQUESTS as isize - self.pending_requests, 0) as usize;
 
-        Box::pin(
-            async move {
-                let mut tcp_stream = TcpStream::connect(&(ip_address, port)).await?;
+        if self.assigned_pieces.len() == 0 {
+            trace!(
+                "Not sending messages because no assigned pieces to {}:{}",
+                self.ip_address, self.port
+            );
+            return;
+        }
 
-                tcp_stream.write_all(&handshake.serialize()).await?;
+        if max == 0 {
+            trace!(
+                "Not sending messages to {}:{} because already have {} pending",
+                self.ip_address, self.port, self.pending_requests
+            );
+            return;
+        }
 
-                let mut pstr_len = [0u8; 1];
-                tcp_stream.read_exact(&mut pstr_len).await?;
+        trace!("Can send a max of {} message(s)", max);
 
-                let mut pstr_data = vec![0u8; pstr_len[0] as usize];
-                tcp_stream.read_exact(&mut pstr_data).await?;
-                let pstr = String::from_utf8_lossy(&pstr_data).to_string();
-
-                debug!("Protocol string: {}", pstr);
-
-                let mut reserved_data = [0u8; 8];
-                let mut info_hash_data = [0u8; 20];
-                let mut peer_id = [0u8; 20];
-
-                tcp_stream.read_exact(&mut reserved_data).await?;
-                tcp_stream.read_exact(&mut info_hash_data).await?;
-                tcp_stream.read_exact(&mut peer_id).await?;
-
-                debug!("Handshake bytes written for {}:{}", ip_address, port);
-
-                Ok(tcp_stream)
-            }
-            .into_actor(self)
-            .map(
-                move |tcp_stream_result, actor, ctx| match tcp_stream_result {
-                    Ok(tcp_stream) => {
-                        let (read_half, write_half) = tcp_stream.into_split();
-                        ctx.add_stream(FramedRead::new(read_half, BittorrentCodec));
-                        actor.write_half = Some(write_half);
-
-                        Ok(())
-                    }
-                    Err(err) => {
-                        error!("Error connecting to {}:{} - {:?}", ip_address, port, err);
-
-                        Err(err)
-                    }
-                },
-            ),
-        )
-    }
-
-    fn request_pieces(&mut self) -> ResponseActFuture<Self, Result<(), PeerError>> {
-        let messages: Vec<_> = self
+        let next_messages = self
             .pieces
-            .next_pieces(&self.assigned_pieces, MAX_PIECE_REQUESTS)
-            .iter()
-            .map(|piece_request| BittorrentMessage::Request {
-                index: piece_request.index,
-                begin: piece_request.begin,
-                length: piece_request.length,
+            .next_pieces(&self.assigned_pieces, max)
+            .into_iter()
+            .map(|request| BittorrentMessage::Request {
+                index: request.index,
+                begin: request.begin,
+                length: request.length,
             })
-            .collect();
+            .collect::<Vec<_>>();
 
-        Box::pin(
-            match self.write_half.take() {
-                Some(mut write_half) => {
-                    async move {
-                        debug!("Sending {} message(s)", messages.len());
-                        for msg in messages.into_iter() {
-                            write_half.write_all(&msg.serialize()).await?;
-                        }
+        self.pending_requests += next_messages.len() as isize;
 
-                        Ok(())
-                    }
-                }
-                None => unimplemented!("Never mind") 
-            }
-            .into_actor(self),
-        )
-    }
-}
+        debug!(
+            "Sending {} messages to {}:{}",
+            next_messages.len(),
+            self.ip_address,
+            self.port,
+        );
 
-#[derive(Message, Debug)]
-#[rtype(result = "Result<(), PeerError>")]
-pub struct Handshake {
-    pub info_hash: [u8; 20],
-    pub peer_id: [u8; 20],
-}
-
-impl Handler<Handshake> for Peer {
-    type Result = ResponseActFuture<Self, Result<(), PeerError>>;
-
-    fn handle(&mut self, msg: Handshake, _ctx: &mut Context<Self>) -> Self::Result {
-        debug!("Received Handshake");
-
-        self.handshake(BittorrentHandshake {
-            info_hash: msg.info_hash,
-            peer_id: msg.peer_id,
-        })
+        for message in next_messages.into_iter() {
+            trace!(
+                "Sending to {}:{} - {:?}",
+                self.ip_address, self.port, message
+            );
+            self.writer.write(message);
+        }
     }
 }
 
@@ -161,7 +134,7 @@ pub struct SendMessage {
 }
 
 #[derive(Message)]
-#[rtype(result = "()")]
+#[rtype(result = "Result<(), PeerError>")]
 pub struct RecvMessage {
     pub msg: BittorrentMessage,
 }
@@ -194,43 +167,63 @@ impl Handler<HavePiece> for Peer {
 }
 
 impl Handler<RecvMessage> for Peer {
-    type Result = ResponseActFuture<Self, ()>;
+    type Result = Result<(), PeerError>;
 
     fn handle(&mut self, msg: RecvMessage, _ctx: &mut Context<Self>) -> Self::Result {
-        debug!("Received RecvMessage");
+        debug!(
+            "Received RecvMessage from {}:{}",
+            self.ip_address, self.port
+        );
         let ip_address = self.ip_address;
         let port = self.port;
-        let coordinator_addr = self.coordinator_addr.clone();
 
-        if let BittorrentMessage::Choke = msg.msg {
-            self.pieces.clear_requests();
+        if let BittorrentMessage::Piece {
+            index,
+            begin,
+            block,
+        } = &msg.msg
+        {
+            self.pieces.add(Piece {
+                index: *index,
+                begin: *begin,
+                block: block.clone(),
+            });
+            if self.pieces.is_complete(*index) {
+                debug!(
+                    "Got a complete piece from {}:{}",
+                    self.ip_address, self.port
+                );
+                self.pieces.remove(*index);
+                self.assigned_pieces.retain(|i| *i != *index);
+            }
+
+            self.pending_requests = max(0, self.pending_requests - 1);
         }
 
-        Box::pin(
-            async move {
-                match coordinator_addr
-                    .send(PeerMessage {
-                        msg: msg.msg,
-                        ip_address,
-                        port,
-                    })
-                    .await
-                {
-                    Ok(_) => (),
-                    Err(err) => {
-                        error!("Error sending peer message to coordinator: {}", err);
-                    }
-                }
-            }
-            .into_actor(self),
-        )
+        trace!("Received message was {:?}", msg.msg);
+
+        self.coordinator_addr.do_send(PeerMessage {
+            msg: msg.msg,
+            ip_address,
+            port,
+        });
+
+        self.send_next_messages();
+
+        Ok(())
     }
+}
+
+impl WriteHandler<PeerError> for Peer {
+    // optional: override methods if needed
 }
 
 #[derive(Debug)]
 pub enum PeerError {
     IOErr(io::Error),
     BittorrentMessageErr(BittorrentMessageError),
+    NotConnected,
+    Timeout,
 }
 
 impl From<io::Error> for PeerError {
@@ -248,7 +241,7 @@ impl From<BittorrentMessageError> for PeerError {
 #[derive(Debug)]
 pub enum BittorrentMessageError {
     InvalidLength,
-    UnknownId,
+    UnknownId(u8),
     Malformed,
 }
 
@@ -268,7 +261,7 @@ impl BittorrentHandshake {
         buf
     }
 
-    pub fn deserialize(data: &[u8]) -> Result<Self, BittorrentMessageError> {
+    /*pub fn deserialize(data: &[u8]) -> Result<Self, BittorrentMessageError> {
         if data.len() < 68 {
             return Err(BittorrentMessageError::UnknownId);
         }
@@ -286,7 +279,7 @@ impl BittorrentHandshake {
             .try_into()
             .map_err(|_| BittorrentMessageError::InvalidLength)?;
         Ok(Self { info_hash, peer_id })
-    }
+    }*/
 
     pub fn len() -> usize {
         49 + 20 + 20
@@ -315,6 +308,14 @@ pub enum BittorrentMessage {
         index: u32,
         begin: u32,
         block: Vec<u8>,
+    },
+    Cancel {
+        index: u32,
+        begin: u32,
+        length: u32,
+    },
+    Port {
+        port: u16,
     },
 }
 
@@ -361,13 +362,41 @@ impl BittorrentMessage {
                 let index = u32::from_be_bytes([payload[0], payload[1], payload[2], payload[3]]);
                 let begin = u32::from_be_bytes([payload[4], payload[5], payload[6], payload[7]]);
                 let length = u32::from_be_bytes([payload[8], payload[9], payload[10], payload[11]]);
+
                 Ok(BittorrentMessage::Request {
                     index,
                     begin,
                     length,
                 })
             }
-            _ => Err(BittorrentMessageError::UnknownId),
+            7 => {
+                let index = u32::from_be_bytes([payload[0], payload[1], payload[2], payload[3]]);
+                let begin = u32::from_be_bytes([payload[4], payload[5], payload[6], payload[7]]);
+                let block = data[8..data.len()].iter().cloned().collect();
+
+                Ok(BittorrentMessage::Piece {
+                    index,
+                    begin,
+                    block,
+                })
+            }
+            8 => {
+                let index = u32::from_be_bytes([payload[0], payload[1], payload[2], payload[3]]);
+                let begin = u32::from_be_bytes([payload[4], payload[5], payload[6], payload[7]]);
+                let length = u32::from_be_bytes([payload[8], payload[9], payload[10], payload[11]]);
+
+                Ok(BittorrentMessage::Cancel {
+                    index,
+                    begin,
+                    length,
+                })
+            }
+            9 => {
+                let port = u16::from_be_bytes([payload[0], payload[1]]);
+
+                Ok(BittorrentMessage::Port { port })
+            }
+            id => Err(BittorrentMessageError::UnknownId(id)),
         }
     }
 
@@ -410,12 +439,32 @@ impl BittorrentMessage {
                 begin,
                 block,
             } => {
-                let mut v = Vec::with_capacity(9 + block.len());
+                let mut v = Vec::with_capacity(4 + 1 + 2 * (4) + block.len());
                 v.extend_from_slice(&(9u32 + block.len() as u32).to_be_bytes());
                 v.push(7);
                 v.extend_from_slice(&index.to_be_bytes());
                 v.extend_from_slice(&begin.to_be_bytes());
                 v.extend_from_slice(block);
+                v
+            }
+            BittorrentMessage::Cancel {
+                index,
+                begin,
+                length,
+            } => {
+                let mut v = Vec::with_capacity(4 + 1 + 3 * 4);
+                v.extend_from_slice(&(3u32 * 4u32).to_be_bytes());
+                v.push(8);
+                v.extend_from_slice(&index.to_be_bytes());
+                v.extend_from_slice(&begin.to_be_bytes());
+                v.extend_from_slice(&length.to_be_bytes());
+                v
+            }
+            BittorrentMessage::Port { port } => {
+                let mut v = Vec::with_capacity(4 + 1 + 2);
+                v.extend_from_slice(&(1u32 + 2u32).to_be_bytes());
+                v.push(9);
+                v.extend_from_slice(&port.to_be_bytes());
                 v
             }
         }
@@ -424,43 +473,142 @@ impl BittorrentMessage {
 
 #[derive(Message)]
 #[rtype(result = "Result<(), PeerError>")]
-pub struct AssignPieces {
-    pub assigned_pieces: Vec<u32>,
+pub enum PeerControl {
+    AssignPieces { assigned_pieces: Vec<u32> },
+    ChokeThem,
+    UnchokeThem,
+    Interested,
+    NotInterested,
 }
 
-impl Handler<AssignPieces> for Peer {
+impl Handler<PeerControl> for Peer {
     type Result = Result<(), PeerError>;
 
-    fn handle(&mut self, msg: AssignPieces, _ctx: &mut Context<Self>) -> Self::Result {
-        self.assigned_pieces = msg.assigned_pieces;
+    fn handle(&mut self, msg: PeerControl, _ctx: &mut Context<Self>) -> Self::Result {
+        debug!("Received PeerControl for {}:{}", self.ip_address, self.port);
+
+        match msg {
+            PeerControl::AssignPieces { assigned_pieces } => {
+                debug!(
+                    "Assigned {} piece(s) to {}:{}",
+                    self.ip_address,
+                    self.port,
+                    assigned_pieces.len()
+                );
+                self.assigned_pieces = assigned_pieces;
+            }
+            PeerControl::ChokeThem => {
+                debug!("Sending Choke to {}:{}", self.ip_address, self.port);
+                self.writer.write(BittorrentMessage::Choke);
+            }
+            PeerControl::UnchokeThem => {
+                debug!("Sending Unchoke to {}:{}", self.ip_address, self.port);
+                self.writer.write(BittorrentMessage::Unchoke);
+            }
+            PeerControl::Interested => {
+                debug!("Sending Interested to {}:{}", self.ip_address, self.port);
+                self.writer.write(BittorrentMessage::Interested);
+            }
+            PeerControl::NotInterested => {
+                debug!("Sending NotInterested to {}:{}", self.ip_address, self.port);
+                self.writer.write(BittorrentMessage::NotInterested);
+            }
+        }
+
+        self.send_next_messages();
 
         Ok(())
     }
 }
 
-struct BittorrentCodec;
+#[derive(Clone)]
+struct BittorrentCodec {
+    handshake_sent: bool,
+    handshake_received: bool,
+    info_hash: [u8; 20],
+    peer_id: [u8; 20],
+}
 
 impl Decoder for BittorrentCodec {
     type Item = BittorrentMessage;
     type Error = PeerError;
 
     fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
+        trace!("Decoding message");
+        if !self.handshake_received {
+            trace!("Decoding handshake first");
+            if src.len() < 1 {
+                trace!("Have 0 bytes for handshake but need more");
+                return Ok(None);
+            }
+
+            const RESERVED_LEN: usize = 8;
+            const INFO_HASH_LEN: usize = 20;
+            const PEER_ID_LEN: usize = 20;
+
+            let pstr_len = src[0] as usize;
+            let total_msg_len = 1 + pstr_len + RESERVED_LEN + INFO_HASH_LEN + PEER_ID_LEN;
+            if src.len() < total_msg_len {
+                trace!(
+                    "Have {} byte(s) for handshake but need {}",
+                    src.len(),
+                    total_msg_len
+                );
+                return Ok(None);
+            }
+
+            // don't actually care, just read off the bytes and drop them
+            drop(src.split_to(total_msg_len));
+
+            trace!("Successfully decoded handshake");
+            self.handshake_received = true;
+
+            return Ok(None);
+        }
+
         // check we have enough bytes
         if src.len() < 4 {
             trace!("Have {} bytes so do not know length", src.len());
             return Ok(None);
         }
+        trace!("Reading message from {} bytes", src.len());
         let len = u32::from_be_bytes([src[0], src[1], src[2], src[3]]);
         let total_len = len as usize + 4;
         if src.len() < total_len {
-            trace!("Have {} bytes but need at least{}", src.len(), total_len);
+            trace!("Have {} bytes but need at least {}", src.len(), total_len);
 
             return Ok(None);
         }
 
         // read the message
+        trace!("Reading {} bytes", total_len);
         let msg = BittorrentMessage::deserialize(&src.split_to(total_len))?;
+
+        trace!("Successfully deserialised message");
         Ok(Some(msg))
+    }
+}
+
+impl Encoder<BittorrentMessage> for BittorrentCodec {
+    type Error = PeerError;
+
+    fn encode(&mut self, item: BittorrentMessage, dst: &mut BytesMut) -> Result<(), Self::Error> {
+        if !self.handshake_sent {
+            trace!("Sending handshake first");
+
+            let handshake = BittorrentHandshake {
+                info_hash: self.info_hash,
+                peer_id: self.peer_id,
+            };
+            dst.extend_from_slice(&handshake.serialize());
+
+            self.handshake_sent = true;
+        }
+        trace!("Sending {:?}", item);
+
+        dst.extend_from_slice(&item.serialize());
+
+        Ok(())
     }
 }
 
@@ -485,6 +633,6 @@ impl Actor for Peer {
     type Context = Context<Self>;
 
     fn stopped(&mut self, _ctx: &mut Self::Context) {
-        debug!("Removing peer {}:{}", self.ip_address, self.port);
+        debug!("Disconnecting from peer {}:{}", self.ip_address, self.port);
     }
 }
