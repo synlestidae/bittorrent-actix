@@ -1,4 +1,5 @@
 use crate::coordinator::{Coordinator, PeerMessage};
+use crate::filer::{FilerError, WholePiece};
 use crate::metadata::{Info, Piece};
 use crate::piece_tracker::PieceTracker;
 use actix::io::{FramedWrite, WriteHandler};
@@ -76,12 +77,23 @@ impl Peer {
         }
     }
 
+    pub fn do_things(&mut self) {
+        self.handle_pieces();
+        self.send_next_messages();
+    }
+
+    pub fn handle_pieces(&mut self) {
+        let complete_pieces = self.pieces.complete_pieces();
+        debug!("Have {} complete pieces", complete_pieces.len());
+        // TODO Need to dispatch these to filer and mark done
+    }
+
     pub fn send_next_messages(&mut self) {
         let max = max(MAX_PIECE_REQUESTS as isize - self.pending_requests, 0) as usize;
 
         if self.assigned_pieces.len() == 0 {
             trace!(
-                "Not sending messages because no assigned pieces to {}:{}",
+                "Not sending messages to {}:{} because no assigned pieces",
                 self.ip_address, self.port
             );
             return;
@@ -95,7 +107,10 @@ impl Peer {
             return;
         }
 
-        trace!("Can send a max of {} message(s)", max);
+        trace!(
+            "Can send a max of {} message(s) to {}:{}",
+            max, self.ip_address, self.port
+        );
 
         let next_messages = self
             .pieces
@@ -166,16 +181,21 @@ impl Handler<HavePiece> for Peer {
     }
 }
 
+//pub enum PeerResult {
+//    WholePiece { piece_index: u32, piece: Vec<u8> },
+//}
+
 impl Handler<RecvMessage> for Peer {
     type Result = Result<(), PeerError>;
 
-    fn handle(&mut self, msg: RecvMessage, _ctx: &mut Context<Self>) -> Self::Result {
+    fn handle(&mut self, msg: RecvMessage, ctx: &mut Context<Self>) -> Self::Result {
         debug!(
             "Received RecvMessage from {}:{}",
             self.ip_address, self.port
         );
         let ip_address = self.ip_address;
         let port = self.port;
+        let mut whole_pieces = Vec::new();
 
         if let BittorrentMessage::Piece {
             index,
@@ -183,12 +203,25 @@ impl Handler<RecvMessage> for Peer {
             block,
         } = &msg.msg
         {
+            debug!(
+                "Received piece index={}, begin={}, length={}",
+                *index,
+                *begin,
+                block.len()
+            );
             self.pieces.add(Piece {
                 index: *index,
                 begin: *begin,
                 block: block.clone(),
             });
             if self.pieces.is_complete(*index) {
+                let piece = self.pieces.get_piece(*index);
+                whole_pieces.push(WholePiece {
+                    index: *index,
+                    piece,
+                    ip_address: self.ip_address,
+                    port: self.port,
+                });
                 debug!(
                     "Got a complete piece from {}:{}",
                     self.ip_address, self.port
@@ -197,7 +230,9 @@ impl Handler<RecvMessage> for Peer {
                 self.assigned_pieces.retain(|i| *i != *index);
             }
 
-            self.pending_requests = max(0, self.pending_requests - 1);
+            if self.pending_requests > 0 {
+                self.pending_requests -= 1;
+            }
         }
 
         trace!("Received message was {:?}", msg.msg);
@@ -208,7 +243,30 @@ impl Handler<RecvMessage> for Peer {
             port,
         });
 
-        self.send_next_messages();
+        self.do_things();
+
+        for whole_piece in whole_pieces.into_iter() {
+            ctx.spawn(
+                self.coordinator_addr
+                    .send(whole_piece)
+                    .into_actor(self)
+                    .map(|result, _actor, _ctx| match result {
+                        Ok(filer_result) => match filer_result.error {
+                            Some(FilerError::WrongSha1)
+                            | Some(FilerError::IndexOutOfBounds)
+                            | Some(FilerError::FilerMsgErr) => {
+                                debug!("Filer error but not much can do")
+                            }
+                            None => {
+                                debug!("Successfully stored piece");
+                            }
+                        },
+                        Err(err) => {
+                            error!("Error sending whole piece: {}", err);
+                        }
+                    }),
+            );
+        }
 
         Ok(())
     }
@@ -515,7 +573,7 @@ impl Handler<PeerControl> for Peer {
             }
         }
 
-        self.send_next_messages();
+        self.do_things();
 
         Ok(())
     }

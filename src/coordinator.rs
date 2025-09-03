@@ -1,4 +1,3 @@
-use core::error;
 use std::collections::HashMap;
 use std::net::Ipv4Addr;
 use std::time::Duration;
@@ -10,7 +9,7 @@ use rand::Rng;
 use tokio::net::TcpStream;
 use tokio::time::timeout;
 
-use crate::filer::{Filer, PieceRequest};
+use crate::filer::{Filer, FilerError, FilerResult, WholePiece};
 use crate::metadata::Info;
 use crate::peer::{BittorrentMessage, Peer, PeerControl, PeerError};
 use crate::peer_state::PeerState;
@@ -248,30 +247,62 @@ impl Handler<PeerMessage> for Coordinator {
             peer_addr.do_send(PeerControl::AssignPieces { assigned_pieces });
         }
 
-        if let Some((peer_addr, state)) = self.peers.get(&(ip_address, port))
-            && let BittorrentMessage::Request {
-                index,
-                begin,
-                length,
-            } = msg.msg
-            && !state.us_choking
-        {
-            self.filer_addr.do_send(PieceRequest {
-                index,
-                begin,
-                length,
-                ip_address,
-                port,
-                peer_addr: peer_addr.clone(),
-            });
-        }
-
         let control_messages = self.control_messages();
         for (ip_address, port, message) in control_messages.into_iter() {
             if let Some((peer_addr, _)) = self.peers.get(&(ip_address, port)) {
                 peer_addr.do_send(message);
             }
         }
+    }
+}
+
+impl Handler<WholePiece> for Coordinator {
+    type Result = ResponseActFuture<Self, FilerResult>;
+
+    fn handle(&mut self, msg: WholePiece, _ctx: &mut Context<Self>) -> Self::Result {
+        //return Box::pin(self.filer_addr.send(msg).into_actor(self))
+        let filer_addr = self.filer_addr.clone();
+        let ip_address = msg.ip_address;
+        let port = msg.port;
+        let piece_index = msg.index;
+
+        Box::pin(
+            filer_addr
+                .send(msg)
+                .into_actor(self)
+                .map(move |result, actor, _| match result {
+                    Ok(filer_result) => {
+                        if let Some(error) = filer_result.error {
+                            match error {
+                                FilerError::WrongSha1
+                                | FilerError::IndexOutOfBounds
+                                | FilerError::FilerMsgErr => {
+                                    // if it is wrong md5 sum, record penalty against peer state
+                                    //
+                                    // if wrong index, this is a weird error but peer may have sent
+                                    // pieces we didn't expect
+                                    //
+                                    // filer msg error means filer may be under pressure, we can
+                                    // wait and try again i suppose
+                                    error!("Filer error, not sure what to do");
+                                }
+                            }
+                        } else {
+                            debug!("WholePiece successfully dispatched");
+                            actor.we_have.set(piece_index as usize, true);
+                        }
+                        FilerResult { ip_address, port, error: None }
+                    }
+                    Err(err) => {
+                        error!("Error sending WholePiece to filer: {}", err);
+                        FilerResult {
+                            ip_address, 
+                            port, 
+                            error: Some(FilerError::FilerMsgErr),
+                        }
+                    }
+                }),
+        )
     }
 }
 

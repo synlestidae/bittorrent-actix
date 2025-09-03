@@ -13,7 +13,7 @@ pub struct Init {
 
 impl Init {
     pub fn new(metadata: Metadata, info_hash: [u8; 20]) -> Self {
-        let filer_addr = Filer::new().start();
+        let filer_addr = Filer::new(metadata.info.clone()).start();
         let coordinator_addr =
             Coordinator::new(metadata.info.clone(), info_hash, filer_addr.clone()).start();
         let tracker_addr =

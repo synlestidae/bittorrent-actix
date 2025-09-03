@@ -1,9 +1,7 @@
-use std::cmp::min;
-
 use log::trace;
-use ureq::trace;
+use std::{cmp::min, collections::HashSet};
 
-use crate::metadata::{Piece, PieceRequest};
+use crate::metadata::{CompletePiece, Piece, PieceRequest};
 
 #[derive(Debug)]
 pub struct PieceTracker {
@@ -66,86 +64,54 @@ impl PieceTracker {
         piece
     }
 
-    pub fn next_pieces(&mut self, assigned_piece_indexes: &[u32], max: usize) -> &[PieceRequest] {
-        trace!(
-            "Working out next messages for {} assigned piece(s)",
-            assigned_piece_indexes.len()
-        );
-        let mut pieces: Vec<PieceRequest> = self
+    pub fn next_pieces(&mut self, assigned_piece_indexes: &[u32], max: usize) -> Vec<PieceRequest> {
+        let pieces = self
             .pieces
             .iter()
-            .map(|stored_piece| PieceRequest {
-                index: stored_piece.index,
-                begin: stored_piece.begin,
-                length: stored_piece.block.len() as u32,
+            .map(|p| PieceRequest {
+                index: p.index,
+                begin: p.begin,
+                length: p.block.len() as u32,
             })
             .chain(self.requested_pieces.iter().cloned())
             .collect();
 
-        pieces.sort_by(|piece0, piece1| {
-            (piece0.index, piece1.begin).cmp(&(piece1.index, piece1.begin))
-        });
+        let piece_iterator = PieceIterator::new(
+            &pieces,
+            assigned_piece_indexes,
+            self.piece_length,
+            PIECE_REQUEST_SIZE,
+        );
 
-        trace!("Have {} pieces already", pieces.len());
+        let total_max = max - self.pieces.len();
 
-        let mut new_pieces = Vec::new();
+        let mut new_pieces: Vec<_> = piece_iterator.take(total_max).collect();
+        self.requested_pieces.append(&mut new_pieces.clone());
 
-        if !pieces.is_empty() {
-            for i in 0..pieces.len() - 1 {
-                let piece0 = &pieces[i];
-                let piece1 = &pieces[i + 1];
+        trace!("Got {} new piece(s) to request", new_pieces.len());
 
-                // fill gap between same piece indexes
-                if piece0.index == piece1.index && piece0.begin + piece0.length < piece1.begin {
-                    let mut gap = fill_gap(piece0, piece1.begin, max);
-                    trace!("Filling gap in same piece with {} piece(s)", gap.len());
-                    new_pieces.append(&mut gap);
-                }
-
-                // fill gap between different piece indexes
-                if piece0.index != piece1.index && piece0.begin + piece0.length < self.piece_length
-                {
-                    let mut gap = fill_gap(piece0, piece1.begin, max);
-                    trace!("Filling gap between pieces with {} piece(s)", gap.len());
-                    new_pieces.append(&mut gap);
-                }
-            }
-        }
-
-        // new_pieces will be empty if we do not have any pieces whatsoever
-        // in that case, seed a piece and fill
-        if new_pieces.len() < max {
-            trace!(
-                "Filling up to {} piece(s) from up to {} for {} piece(s)",
-                new_pieces.len(),
-                max,
-                assigned_piece_indexes.len()
-            );
-            for piece_index in assigned_piece_indexes.iter() {
-                trace!("Starting with piece {}", *piece_index);
-                let piece = PieceRequest {
-                    index: *piece_index,
-                    begin: 0,
-                    length: min(PIECE_REQUEST_SIZE, self.piece_length),
-                };
-                let mut gap = fill_gap(&piece, self.piece_length, max);
-                gap.insert(0, piece);
-                trace!("Filled gap with {} piece(s)", gap.len());
-                new_pieces.append(&mut gap);
-            }
-        }
-
-        trace!("{} new pieces", new_pieces.len());
-
-        let new_piece_count = new_pieces.len();
-        let total_piece_count = new_pieces.len();
-        self.requested_pieces.append(&mut new_pieces);
-
-        &self.requested_pieces[(total_piece_count - new_piece_count)..total_piece_count]
+        new_pieces
     }
 
-    pub fn complete_pieces(&mut self) -> Vec<Piece> {
-        unimplemented!()
+    pub fn complete_pieces(&mut self) -> Vec<CompletePiece> {
+        let piece_indexes = self
+            .pieces
+            .iter()
+            .map(|p| p.index)
+            .collect::<HashSet<u32>>();
+        let mut complete_pieces = Vec::new();
+
+        for piece_index in piece_indexes.iter() {
+            if self.is_complete(*piece_index) {
+                let complete_piece = self.get_piece(*piece_index);
+                complete_pieces.push(CompletePiece {
+                    index: *piece_index,
+                    block: complete_piece,
+                });
+            }
+        }
+
+        return complete_pieces;
     }
 
     pub fn clear_requests(&mut self) {
@@ -153,179 +119,465 @@ impl PieceTracker {
     }
 }
 
-pub fn fill_gap(piece0: &PieceRequest, until_offset: u32, max: usize) -> Vec<PieceRequest> {
-    let mut new_pieces = Vec::new();
-    let mut offset: u32 = piece0.length;
-    let mut count = 0;
+struct PieceIterator<'a> {
+    pieces: &'a Vec<PieceRequest>,
+    new_pieces: Vec<PieceRequest>,
+    assigned_pieces: &'a [u32],
+    piece_length: u32,
+    max_piece_length: u32,
+    /// Piece that we analysing now
+    piece_vec_index: usize,
+    /// Of the piece we analysing now, the offset within that piece
+    offset_index: u32,
+}
 
-    println!(
-        "Filling gap index={} offset={} until_offset={} count={} max={}",
-        piece0.index, offset, until_offset, count, max
-    );
+impl<'a> PieceIterator<'a> {
+    fn new(
+        pieces: &'a Vec<PieceRequest>,
+        assigned_pieces: &'a [u32],
+        piece_length: u32,
+        max_piece_length: u32,
+    ) -> Self {
+        Self {
+            pieces,
+            new_pieces: Vec::new(),
+            assigned_pieces,
+            piece_length,
+            max_piece_length,
+            offset_index: 0,
+            piece_vec_index: 0,
+        }
+    }
+}
 
-    // Add pieces until gap closes
-    while offset < until_offset && count < max {
-        // Either request a standard piece size, or when near end, what remains
-        let length = min(PIECE_REQUEST_SIZE, until_offset - offset);
-        println!("length = {}", length);
+impl<'a> Iterator for PieceIterator<'a> {
+    type Item = PieceRequest;
 
-        new_pieces.push(PieceRequest {
-            index: piece0.index,
-            begin: offset,
-            length,
-        });
+    fn next(&mut self) -> Option<Self::Item> {
+        // To analyse gaps, pieces need to be in order
+        // Note that biggest pieces go first
+        let mut pieces: Vec<_> = self
+            .pieces
+            .iter()
+            .cloned()
+            .chain(self.new_pieces.iter().cloned())
+            .collect();
+        pieces.sort_by_key(|p| (p.index, p.begin, u32::MAX - p.length));
 
-        if new_pieces.len() >= max {
-            return new_pieces;
+        trace!("Pieces to iterate: {:?}", pieces);
+
+        while self.piece_vec_index + 1 < pieces.len() {
+            // We are not at end of pieces
+            // We may need to fill a gap
+            let piece = &pieces[self.piece_vec_index];
+            let next_piece = &pieces[self.piece_vec_index + 1];
+
+            trace!("Looking at two pieces: ({:?},{:?})", piece, next_piece);
+
+            let begin = piece.begin + piece.length;
+            let length = min(self.max_piece_length, self.piece_length - begin);
+
+            if piece.index == next_piece.index && piece.begin + piece.length < next_piece.begin {
+                // We're between two different pieces but first piece does not complete piece
+                // request
+                trace!(
+                    "Filling gap between two different: min({}, {} - {})",
+                    self.max_piece_length, self.piece_length, begin
+                );
+
+                let piece_request = PieceRequest {
+                    index: piece.index,
+                    begin,
+                    length,
+                };
+
+                self.new_pieces.push(piece_request.clone());
+                return Some(piece_request);
+            } else if piece.index != next_piece.index
+                && piece.begin + piece.length < self.piece_length
+            {
+                // We're between two same pieces and first piece does not complete piece
+                trace!(
+                    "Filling gap between two different: min({}, {} - {})",
+                    self.max_piece_length, self.piece_length, begin
+                );
+
+                let piece_request = PieceRequest {
+                    index: piece.index,
+                    begin,
+                    length,
+                };
+
+                self.new_pieces.push(piece_request.clone());
+                return Some(piece_request);
+            }
+
+            self.piece_vec_index += 1;
         }
 
-        offset += length;
+        if self.piece_vec_index + 1 == pieces.len() {
+            // We are at the last piece. We may need to complete it
 
-        count += 1;
+            let piece = &pieces[self.piece_vec_index];
+            let piece_end = piece.begin + piece.length;
+
+            trace!("At last piece: {:?} with piece end {}", piece, piece_end);
+
+            if piece_end < self.piece_length {
+                // Last piece needs filling
+                let length = min(self.max_piece_length, self.piece_length - piece_end);
+
+                let piece_request = PieceRequest {
+                    index: piece.index,
+                    begin: piece_end,
+                    length,
+                };
+                trace!("Filling last piece: {:?}", piece_request);
+                self.new_pieces.push(piece_request.clone());
+                return Some(piece_request);
+            }
+
+            // Last piece now complete!
+            // Can now move to assigned pieces
+        }
+
+        // All existing pieces have their gaps filled
+        // We can start on the assigned pieces now
+        // First find one that we haven't seen yet
+        // Create the first and yield it
+        trace!("Observing assigned pieces now");
+        for index in self.assigned_pieces.iter() {
+            if !pieces.iter().any(|p| p.index == *index) {
+                let begin = self.offset_index;
+                let length = min(self.max_piece_length, self.piece_length);
+
+                self.offset_index += length;
+
+                let piece_request = PieceRequest {
+                    index: *index,
+                    begin,
+                    length,
+                };
+                self.new_pieces.push(piece_request.clone());
+                trace!("Filling assigned piece: {:?}", piece_request);
+                return Some(piece_request);
+            }
+        }
+
+        // No more pieces to do
+        None
     }
-
-    new_pieces
 }
 
 #[cfg(test)]
 mod test {
-    use crate::metadata::PieceRequest;
-    use crate::piece_bucket::{PIECE_REQUEST_SIZE, PieceTracker, fill_gap};
+    use crate::{
+        metadata::PieceRequest,
+        piece_tracker::{PIECE_REQUEST_SIZE, PieceIterator},
+    };
 
     #[test]
-    fn test_fill_gap_one_piece() {
-        let piece = PieceRequest {
+    pub fn test_piece_iterator_zero_pieces() {
+        let mut pieces = vec![];
+        let assigned_piece_indexes = vec![];
+        let mut piece_iterator =
+            PieceIterator::new(&pieces, &assigned_piece_indexes, 1024, PIECE_REQUEST_SIZE);
+
+        assert_eq!(piece_iterator.next(), None);
+    }
+
+    #[test]
+    pub fn test_piece_iterator_one_piece() {
+        let mut pieces = vec![PieceRequest {
             index: 0,
             begin: 0,
-            length: PIECE_REQUEST_SIZE / 2,
-        };
+            length: 500,
+        }];
+        let assigned_piece_indexes = vec![];
+        let mut piece_iterator =
+            PieceIterator::new(&pieces, &assigned_piece_indexes, 1024, PIECE_REQUEST_SIZE);
 
         assert_eq!(
-            fill_gap(&piece, PIECE_REQUEST_SIZE, 2),
-            vec![PieceRequest {
+            piece_iterator.next(),
+            Some(PieceRequest {
                 index: 0,
-                begin: PIECE_REQUEST_SIZE / 2,
-                length: PIECE_REQUEST_SIZE / 2
-            }]
+                begin: 500,
+                length: 524
+            })
         );
+        assert_eq!(piece_iterator.next(), None);
     }
 
     #[test]
-    fn test_fill_gap_three_quarters() {
-        let piece = PieceRequest {
+    pub fn test_piece_iterator_one_piece_end() {
+        let mut pieces = vec![PieceRequest {
             index: 0,
             begin: 0,
-            length: PIECE_REQUEST_SIZE / 4,
-        };
+            length: 500,
+        }];
+        let assigned_piece_indexes = vec![];
+        let mut piece_iterator =
+            PieceIterator::new(&pieces, &assigned_piece_indexes, 500, PIECE_REQUEST_SIZE);
+
+        assert_eq!(piece_iterator.next(), None);
+    }
+
+    //#[test]
+    pub fn test_piece_iterator_one_piece_two_new_pieces() {
+        let mut pieces = vec![PieceRequest {
+            index: 0,
+            begin: 0,
+            length: 25,
+        }];
+        let assigned_piece_indexes = vec![];
+        let mut piece_iterator = PieceIterator::new(&pieces, &assigned_piece_indexes, 75, 25);
 
         assert_eq!(
-            fill_gap(&piece, PIECE_REQUEST_SIZE, 4),
-            vec![PieceRequest {
+            piece_iterator.next(),
+            Some(PieceRequest {
                 index: 0,
-                begin: PIECE_REQUEST_SIZE / 4,
-                length: 3 * PIECE_REQUEST_SIZE / 4
-            },]
+                begin: 25,
+                length: 25
+            })
         );
-    }
-
-    #[test]
-    fn test_no_assigned_pieces() {
-        let mut piece_bucket = PieceTracker::new(1024);
-
-        assert_eq!(piece_bucket.next_pieces(vec![], 10), &[]);
-    }
-
-    #[test]
-    fn test_fills_one_piece_from_one_assigned_pieces() {
-        let mut piece_bucket = PieceTracker::new(PIECE_REQUEST_SIZE);
-
         assert_eq!(
-            piece_bucket.next_pieces(vec![0], 10),
-            &[PieceRequest {
+            piece_iterator.next(),
+            Some(PieceRequest {
                 index: 0,
-                begin: 0 * PIECE_REQUEST_SIZE,
-                length: PIECE_REQUEST_SIZE,
-            },]
+                begin: 50,
+                length: 25,
+            })
         );
+        assert_eq!(piece_iterator.next(), None);
     }
 
     #[test]
-    fn test_fills_two_pieces_from_two_assigned_pieces() {
-        let mut piece_bucket = PieceTracker::new(PIECE_REQUEST_SIZE);
+    pub fn test_piece_iterator_two_pieces_one_new_piece_in_gap() {
+        let mut pieces = vec![
+            PieceRequest {
+                index: 0,
+                begin: 0,
+                length: 25,
+            },
+            PieceRequest {
+                index: 0,
+                begin: 50,
+                length: 25,
+            },
+        ];
+        let assigned_piece_indexes = vec![];
+        let mut piece_iterator = PieceIterator::new(&pieces, &assigned_piece_indexes, 75, 25);
 
         assert_eq!(
-            piece_bucket.next_pieces(vec![0, 1], 10),
-            &[
-                PieceRequest {
-                    index: 0,
-                    begin: 0,
-                    length: PIECE_REQUEST_SIZE,
-                },
-                PieceRequest {
-                    index: 1,
-                    begin: 0,
-                    length: PIECE_REQUEST_SIZE,
-                },
-            ]
+            piece_iterator.next(),
+            Some(PieceRequest {
+                index: 0,
+                begin: 25,
+                length: 25
+            })
         );
+        assert_eq!(piece_iterator.next(), None);
     }
 
     #[test]
-    fn test_fills_four_pieces_from_two_assigned_pieces() {
-        let mut piece_bucket = PieceTracker::new(PIECE_REQUEST_SIZE * 2);
+    pub fn test_piece_iterator_two_pieces_two_new_pieces_in_two_gap() {
+        let mut pieces = vec![
+            PieceRequest {
+                index: 0,
+                begin: 0,
+                length: 25,
+            },
+            PieceRequest {
+                index: 0,
+                begin: 75,
+                length: 25,
+            },
+        ];
+        let assigned_piece_indexes = vec![];
+        let mut piece_iterator = PieceIterator::new(&pieces, &assigned_piece_indexes, 100, 25);
 
         assert_eq!(
-            piece_bucket.next_pieces(vec![0, 1], 10),
-            &[
-                PieceRequest {
-                    index: 0,
-                    begin: 0,
-                    length: PIECE_REQUEST_SIZE,
-                },
-                PieceRequest {
-                    index: 0,
-                    begin: PIECE_REQUEST_SIZE,
-                    length: PIECE_REQUEST_SIZE,
-                },
-                PieceRequest {
-                    index: 1,
-                    begin: 0,
-                    length: PIECE_REQUEST_SIZE,
-                },
-                PieceRequest {
-                    index: 1,
-                    begin: PIECE_REQUEST_SIZE,
-                    length: PIECE_REQUEST_SIZE,
-                },
-            ]
+            piece_iterator.next(),
+            Some(PieceRequest {
+                index: 0,
+                begin: 25,
+                length: 25
+            })
         );
+        assert_eq!(
+            piece_iterator.next(),
+            Some(PieceRequest {
+                index: 0,
+                begin: 50,
+                length: 25,
+            })
+        );
+        assert_eq!(piece_iterator.next(), None,);
     }
 
-    /*#[test]
-    fn test_fills_four_pieces_from_one_assigned_pieces() {
-        let mut piece_bucket = PieceTracker::new(4 * PIECE_REQUEST_SIZE);
+    #[test]
+    pub fn test_piece_iterator_fills_one_piece_awkward_numbers() {
+        let mut pieces = vec![PieceRequest {
+            index: 0,
+            begin: 0,
+            length: 20,
+        }];
+        let assigned_piece_indexes = vec![];
+        let new_pieces: Vec<PieceRequest> =
+            PieceIterator::new(&pieces, &assigned_piece_indexes, 250, 33).collect();
+        let expected_pieces: Vec<PieceRequest> = vec![
+            PieceRequest {
+                index: 0,
+                begin: 20,
+                length: 33,
+            },
+            PieceRequest {
+                index: 0,
+                begin: 53,
+                length: 33,
+            },
+            PieceRequest {
+                index: 0,
+                begin: 86,
+                length: 33,
+            },
+            PieceRequest {
+                index: 0,
+                begin: 119,
+                length: 33,
+            },
+            PieceRequest {
+                index: 0,
+                begin: 152,
+                length: 33,
+            },
+            PieceRequest {
+                index: 0,
+                begin: 185,
+                length: 33,
+            },
+            PieceRequest {
+                index: 0,
+                begin: 218,
+                length: 32,
+            },
+        ];
 
-        assert_eq!(piece_bucket.next_pieces(vec![0], 4), &[
+        assert_eq!(expected_pieces, new_pieces);
+    }
+
+    #[test]
+    pub fn test_piece_iterator_fills_two_pieces_awkward_numbers() {
+        let mut pieces = vec![
             PieceRequest {
-               index: 0,
-               begin: 0 * PIECE_REQUEST_SIZE,
-               length: PIECE_REQUEST_SIZE,
+                index: 0,
+                begin: 0,
+                length: 20,
             },
             PieceRequest {
-               index: 0,
-               begin: 1 * PIECE_REQUEST_SIZE,
-               length: PIECE_REQUEST_SIZE,
+                index: 1,
+                begin: 0,
+                length: 50,
+            },
+        ];
+        let assigned_piece_indexes = vec![];
+        let new_pieces: Vec<PieceRequest> =
+            PieceIterator::new(&pieces, &assigned_piece_indexes, 100, 33).collect();
+        let expected_pieces: Vec<PieceRequest> = vec![
+            PieceRequest {
+                index: 0,
+                begin: 20,
+                length: 33,
             },
             PieceRequest {
-               index: 0,
-               begin: 2 * PIECE_REQUEST_SIZE,
-               length: PIECE_REQUEST_SIZE,
+                index: 0,
+                begin: 53,
+                length: 33,
             },
             PieceRequest {
-               index: 0,
-               begin: 3 * PIECE_REQUEST_SIZE,
-               length: PIECE_REQUEST_SIZE,
+                index: 0,
+                begin: 86,
+                length: 14,
             },
-        ]);
-    }*/
+            PieceRequest {
+                index: 1,
+                begin: 50,
+                length: 33,
+            },
+            PieceRequest {
+                index: 1,
+                begin: 83,
+                length: 17,
+            },
+        ];
+
+        assert_eq!(expected_pieces, new_pieces);
+    }
+
+    #[test]
+    pub fn test_piece_iterator_fills_one_assigned_piece() {
+        let assigned_piece_indexes = vec![0];
+        let new_pieces: Vec<PieceRequest> =
+            PieceIterator::new(&Vec::new(), &assigned_piece_indexes, 100, 33).collect();
+        let expected_pieces: Vec<PieceRequest> = vec![
+            PieceRequest {
+                index: 0,
+                begin: 0,
+                length: 33,
+            },
+            PieceRequest {
+                index: 0,
+                begin: 33,
+                length: 33,
+            },
+            PieceRequest {
+                index: 0,
+                begin: 66,
+                length: 33,
+            },
+            PieceRequest {
+                index: 0,
+                begin: 99,
+                length: 1,
+            },
+        ];
+
+        assert_eq!(expected_pieces, new_pieces);
+    }
+
+    #[test]
+    pub fn test_piece_iterator_fills_one_piece_one_assigned_piece() {
+        let assigned_piece_indexes = vec![1];
+        let pieces = vec![PieceRequest {
+            index: 0,
+            begin: 0,
+            length: 33,
+        }];
+        let new_pieces: Vec<PieceRequest> =
+            PieceIterator::new(&pieces, &assigned_piece_indexes, 101, 55).collect();
+        let expected_pieces: Vec<PieceRequest> = vec![
+            PieceRequest {
+                index: 0,
+                begin: 33,
+                length: 55,
+            },
+            PieceRequest {
+                index: 0,
+                begin: 88,
+                length: 13,
+            },
+            PieceRequest {
+                index: 1,
+                begin: 0,
+                length: 55,
+            },
+            PieceRequest {
+                index: 1,
+                begin: 55,
+                length: 46,
+            },
+        ];
+
+        assert_eq!(expected_pieces, new_pieces);
+    }
 }

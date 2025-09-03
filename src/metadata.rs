@@ -218,3 +218,8 @@ pub struct PieceRequest {
     pub begin: u32,
     pub length: u32,
 }
+
+pub struct CompletePiece {
+    pub index: u32,
+    pub block: Vec<u8>,
+}
