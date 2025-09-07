@@ -1,5 +1,5 @@
 use crate::coordinator::{Coordinator, PeerMessage};
-use crate::filer::{FilerError, WholePiece};
+use crate::filer::{Filer, WholePiece};
 use crate::metadata::{Info, Piece};
 use crate::piece_tracker::PieceTracker;
 use actix::io::{FramedWrite, WriteHandler};
@@ -20,13 +20,11 @@ pub struct Peer {
     coordinator_addr: Addr<Coordinator>,
     write_half: Option<OwnedWriteHalf>,
     assigned_pieces: Vec<u32>,
-    info: Info,
     pieces: PieceTracker,
     writer: FramedWrite<BittorrentMessage, OwnedWriteHalf, BittorrentCodec>,
     choking: bool,
     interested: bool,
     peer_id: [u8; 20],
-    info_hash: [u8; 20],
     pending_requests: isize,
 }
 
@@ -44,11 +42,11 @@ impl Peer {
         ip_address: Ipv4Addr,
         port: u16,
         coordinator_addr: Addr<Coordinator>,
-        info: &Info,
         info_hash: [u8; 20],
         peer_id: [u8; 20],
-        ctx: &mut Context<Self>,
         tcp_stream: TcpStream,
+        info: &Info,
+        ctx: &mut Context<Self>,
     ) -> Self {
         let (read_half, write_half) = tcp_stream.into_split();
         let codec = BittorrentCodec {
@@ -70,8 +68,6 @@ impl Peer {
             writer,
             choking: false,
             interested: false,
-            info: info.clone(),
-            info_hash,
             peer_id,
             pending_requests: 0,
         }
@@ -181,14 +177,10 @@ impl Handler<HavePiece> for Peer {
     }
 }
 
-//pub enum PeerResult {
-//    WholePiece { piece_index: u32, piece: Vec<u8> },
-//}
-
 impl Handler<RecvMessage> for Peer {
     type Result = Result<(), PeerError>;
 
-    fn handle(&mut self, msg: RecvMessage, ctx: &mut Context<Self>) -> Self::Result {
+    fn handle(&mut self, msg: RecvMessage, _ctx: &mut Context<Self>) -> Self::Result {
         debug!(
             "Received RecvMessage from {}:{}",
             self.ip_address, self.port
@@ -215,6 +207,7 @@ impl Handler<RecvMessage> for Peer {
                 block: block.clone(),
             });
             if self.pieces.is_complete(*index) {
+                self.pieces.mark_complete(*index);
                 let piece = self.pieces.get_piece(*index);
                 whole_pieces.push(WholePiece {
                     index: *index,
@@ -245,28 +238,7 @@ impl Handler<RecvMessage> for Peer {
 
         self.do_things();
 
-        for whole_piece in whole_pieces.into_iter() {
-            ctx.spawn(
-                self.coordinator_addr
-                    .send(whole_piece)
-                    .into_actor(self)
-                    .map(|result, _actor, _ctx| match result {
-                        Ok(filer_result) => match filer_result.error {
-                            Some(FilerError::WrongSha1)
-                            | Some(FilerError::IndexOutOfBounds)
-                            | Some(FilerError::FilerMsgErr) => {
-                                debug!("Filer error but not much can do")
-                            }
-                            None => {
-                                debug!("Successfully stored piece");
-                            }
-                        },
-                        Err(err) => {
-                            error!("Error sending whole piece: {}", err);
-                        }
-                    }),
-            );
-        }
+        // TODO deal with whole pieces
 
         Ok(())
     }
@@ -318,26 +290,6 @@ impl BittorrentHandshake {
         buf.extend_from_slice(&self.peer_id);
         buf
     }
-
-    /*pub fn deserialize(data: &[u8]) -> Result<Self, BittorrentMessageError> {
-        if data.len() < 68 {
-            return Err(BittorrentMessageError::UnknownId);
-        }
-        let pstrlen = data[0] as usize;
-        if pstrlen != 19 {
-            return Err(BittorrentMessageError::UnknownId);
-        }
-        if &data[1..20] != b"BitTorrent protocol" {
-            return Err(BittorrentMessageError::Malformed);
-        }
-        let info_hash = data[28..48]
-            .try_into()
-            .map_err(|_| BittorrentMessageError::InvalidLength)?;
-        let peer_id = data[48..68]
-            .try_into()
-            .map_err(|_| BittorrentMessageError::InvalidLength)?;
-        Ok(Self { info_hash, peer_id })
-    }*/
 
     pub fn len() -> usize {
         49 + 20 + 20
@@ -527,6 +479,14 @@ impl BittorrentMessage {
             }
         }
     }
+}
+
+#[derive(Message)]
+#[rtype(result = "Result<(), PeerError>")]
+pub struct PeerControlEnvelope {
+    pub ip_address: Ipv4Addr,
+    pub port: u16,
+    pub messages: Vec<PeerControl>,
 }
 
 #[derive(Message)]

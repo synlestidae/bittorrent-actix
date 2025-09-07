@@ -11,6 +11,7 @@ use log::{debug, info};
 use sha1::{Digest, Sha1};
 
 mod bencoding;
+mod commander;
 mod coordinator;
 mod filer;
 mod init;

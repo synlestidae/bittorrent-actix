@@ -8,6 +8,7 @@ pub struct PieceTracker {
     pieces: Vec<Piece>,
     requested_pieces: Vec<PieceRequest>,
     piece_length: u32,
+    complete_pieces: HashSet<u32>,
 }
 
 const PIECE_REQUEST_SIZE: u32 = 16_384;
@@ -18,6 +19,7 @@ impl PieceTracker {
             pieces: vec![],
             requested_pieces: vec![],
             piece_length,
+            complete_pieces: HashSet::new(),
         }
     }
 
@@ -51,6 +53,10 @@ impl PieceTracker {
         true
     }
 
+    pub fn mark_complete(&mut self, piece_index: u32) {
+        self.complete_pieces.insert(piece_index);
+    }
+
     pub fn get_piece(&self, piece_index: u32) -> Vec<u8> {
         let mut piece = vec![0u8; self.piece_length as usize];
         for sub_piece in self.pieces.iter().filter(|p| p.index == piece_index) {
@@ -79,6 +85,7 @@ impl PieceTracker {
         let piece_iterator = PieceIterator::new(
             &pieces,
             assigned_piece_indexes,
+            &self.complete_pieces,
             self.piece_length,
             PIECE_REQUEST_SIZE,
         );
@@ -123,6 +130,7 @@ struct PieceIterator<'a> {
     pieces: &'a Vec<PieceRequest>,
     new_pieces: Vec<PieceRequest>,
     assigned_pieces: &'a [u32],
+    complete_pieces: &'a HashSet<u32>,
     piece_length: u32,
     max_piece_length: u32,
     /// Piece that we analysing now
@@ -135,6 +143,7 @@ impl<'a> PieceIterator<'a> {
     fn new(
         pieces: &'a Vec<PieceRequest>,
         assigned_pieces: &'a [u32],
+        complete_pieces: &'a HashSet<u32>,
         piece_length: u32,
         max_piece_length: u32,
     ) -> Self {
@@ -142,6 +151,7 @@ impl<'a> PieceIterator<'a> {
             pieces,
             new_pieces: Vec::new(),
             assigned_pieces,
+            complete_pieces,
             piece_length,
             max_piece_length,
             offset_index: 0,
@@ -161,6 +171,7 @@ impl<'a> Iterator for PieceIterator<'a> {
             .iter()
             .cloned()
             .chain(self.new_pieces.iter().cloned())
+            .filter(|p| self.complete_pieces.contains(&p.index))
             .collect();
         pieces.sort_by_key(|p| (p.index, p.begin, u32::MAX - p.length));
 

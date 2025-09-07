@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use bitvec::{order::Msb0, vec::BitVec};
 
 use crate::{
@@ -12,58 +14,31 @@ pub struct PeerState {
     pub them_interested: bool,
     pub us_choking: bool,
     pub us_interested: bool,
-    pub assigned_pieces: Vec<u32>,
-    pub pieces_received: usize,
+    pub assigned_pieces: HashSet<u32>,
+    pub piece_requests: Vec<PieceRequest>,
+    pub pieces_received: HashSet<u32>,
     pub cancels: Vec<PieceRequest>,
+    pub they_want: Vec<u32>,
 }
 
 impl PeerState {
-    pub fn new(info: &Info) -> Self {
+    pub fn new() -> Self {
         Self {
             handshake: false,
-            they_have: BitVec::repeat(false, info.pieces.len()),
+            they_have: BitVec::new(),
             them_choking: false,
             them_interested: false,
-            us_choking: false,
-            us_interested: false,
-            assigned_pieces: Vec::new(),
-            pieces_received: 0,
+            us_choking: true,
+            us_interested: true,
+            assigned_pieces: HashSet::new(),
+            piece_requests: Vec::new(),
+            pieces_received: HashSet::new(),
             cancels: Vec::new(),
+            they_want: Vec::new(),
         }
     }
 
-    pub fn new_message(&mut self, msg: &BittorrentMessage) {
-        match msg {
-            BittorrentMessage::KeepAlive => {
-                // Do nothing
-            }
-            BittorrentMessage::Choke => {
-                self.them_choking = true;
-            }
-            BittorrentMessage::Unchoke => {
-                self.them_choking = false;
-            }
-            BittorrentMessage::Interested => {
-                self.them_interested = true;
-            }
-            BittorrentMessage::NotInterested => {
-                self.them_interested = false;
-            }
-            BittorrentMessage::Have { piece_index } => {
-                self.they_have.set(*piece_index as usize, true);
-            }
-            BittorrentMessage::BitField { bitfield } => {
-                self.they_have = BitVec::<_, Msb0>::from_slice(bitfield);
-            }
-            _ => (),
-        };
-    }
-
-    pub fn assigned_pieces(&self) -> Vec<u32> {
-        self.assigned_pieces.clone()
-    }
-
     pub fn assign_pieces(&mut self, assigned_pieces: Vec<u32>) {
-        self.assigned_pieces = assigned_pieces;
+        self.assigned_pieces = assigned_pieces.into_iter().collect();
     }
 }
