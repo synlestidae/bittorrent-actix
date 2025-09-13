@@ -1,11 +1,16 @@
-use std::{cmp::min, collections::HashMap, net::Ipv4Addr};
+use std::{
+    cmp::{max, min},
+    collections::HashMap,
+    net::Ipv4Addr,
+};
 
 use actix::prelude::*;
 use bitvec::{order::Msb0, vec::BitVec};
+use log::debug;
 
 use crate::{
-    coordinator::{self, Coordinator},
-    metadata::{Info, PieceRequest},
+    coordinator::Coordinator,
+    metadata::{Info, Piece, PieceRequest},
     peer::{PeerControl, PeerControlEnvelope},
     peer_state::PeerState,
 };
@@ -16,6 +21,8 @@ pub struct Commander {
     peers: HashMap<(Ipv4Addr, u16), PeerState>,
     info: Info,
 }
+
+const MAX_PIECE_REQUESTS: usize = 10;
 
 impl Commander {
     pub fn new(info: Info, coordinator_addr: Addr<Coordinator>) -> Commander {
@@ -44,13 +51,46 @@ impl Commander {
             }
 
             if peer_state.assigned_pieces.len() == 0 {
-                let assigned_pieces: Vec<u32> = (!self.we_have.clone()
-                    & peer_state.they_have.clone())
-                .iter_ones()
-                .map(|i| i as u32)
-                .collect();
-                peer_state.assign_pieces(assigned_pieces.iter().cloned().collect());
-                messages.push(PeerControl::AssignPieces { assigned_pieces });
+                let len = self.info.pieces.len();
+                self.we_have.resize(len, false);
+                peer_state.they_have.resize(len, false);
+
+                let assigned_pieces: Vec<u32> =
+                    peer_state.they_have.iter_ones().map(|i| i as u32).collect();
+
+                if assigned_pieces.len() == 0 {
+                    debug!("No pieces to assign");
+                } else {
+                    peer_state.assign_pieces(assigned_pieces.iter().cloned().collect());
+                    messages.push(PeerControl::AssignPieces { assigned_pieces });
+                }
+            }
+
+            // complete any pieces
+            let complete_pieces = peer_state.piece_tracker.complete_pieces();
+            for complete_piece in complete_pieces {
+                debug!("Piece {} is complete", complete_piece.index);
+                peer_state.piece_tracker.mark_complete(complete_piece.index);
+                peer_state.piece_tracker.remove(complete_piece.index);
+
+                if self
+                    .info
+                    .piece_correct(complete_piece.index, &complete_piece.data)
+                {
+                    debug!("Piece {} is correct", complete_piece.index);
+
+                    // TODO we dump the piece, but need to send it to filer
+                } else {
+                    debug!("Piece {} is incorrect", complete_piece.index);
+                }
+            }
+
+            // get next piece requests
+            let piece_requests = peer_state
+                .piece_tracker
+                .next_pieces(&peer_state.assigned_pieces, MAX_PIECE_REQUESTS);
+            if piece_requests.len() > 0 {
+                messages.push(PeerControl::RequestPieces { piece_requests });
             }
 
             peer_control.push(PeerControlEnvelope {
@@ -85,17 +125,19 @@ pub enum CommanderMsg {
         bitfield: Option<BitVec<u8, Msb0>>,
         have: Option<u32>,
     },
-    PieceCompleted {
-        piece_index: u32,
-    },
     PieceRequest {
         index: u32,
         begin: u32,
         length: u32,
     },
+    Piece {
+        index: u32,
+        begin: u32,
+        block: Vec<u8>,
+    },
 }
 
-#[derive(Message)]
+#[derive(Message, Debug)]
 #[rtype(result = "()")]
 pub struct CommandSet {
     pub peer_control: Vec<PeerControlEnvelope>,
@@ -112,8 +154,10 @@ impl Handler<CommanderMsgEnvelope> for Commander {
                 .peers
                 .contains_key(&(envelope.ip_address, envelope.port))
             {
-                self.peers
-                    .insert((envelope.ip_address, envelope.port), PeerState::new());
+                self.peers.insert(
+                    (envelope.ip_address, envelope.port),
+                    PeerState::new(self.info.pieces_length),
+                );
             }
 
             match (
@@ -130,22 +174,38 @@ impl Handler<CommanderMsgEnvelope> for Commander {
                     Some(peer),
                 ) => {
                     if let Some(them_choking) = choking {
+                        debug!(
+                            "Peer {}:{} set choking to {}",
+                            envelope.ip_address, envelope.port, them_choking
+                        );
                         peer.them_choking = them_choking;
                     }
                     if let Some(them_interested) = interested {
+                        debug!(
+                            "Peer {}:{} set interested to {}",
+                            envelope.ip_address, envelope.port, them_interested
+                        );
+
                         peer.them_interested = them_interested;
                     }
                     if let Some(bitfield) = bitfield {
+                        debug!(
+                            "Peer {}:{} set bitfield to {}",
+                            envelope.ip_address, envelope.port, bitfield
+                        );
+
                         peer.they_have = peer.they_have.clone() | bitfield;
                     }
                     if let Some(piece_index) = have {
-                        let new_size = min(self.info.pieces.len(), piece_index as usize);
+                        debug!(
+                            "Peer {}:{} has piece {}",
+                            envelope.ip_address, envelope.port, piece_index
+                        );
+
+                        let new_size = max(self.info.pieces.len(), piece_index as usize);
                         peer.they_have.resize(new_size, false);
                         peer.they_have.set(piece_index as usize, true);
                     }
-                }
-                (CommanderMsg::PieceCompleted { piece_index }, Some(peer)) => {
-                    peer.pieces_received.insert(piece_index);
                 }
                 (
                     CommanderMsg::PieceRequest {
@@ -155,10 +215,32 @@ impl Handler<CommanderMsgEnvelope> for Commander {
                     },
                     Some(peer),
                 ) => {
+                    debug!(
+                        "Requesting piece index={}, begin={}, length={} from peer {}:{}",
+                        index, begin, length, envelope.ip_address, envelope.port
+                    );
                     peer.piece_requests.push(PieceRequest {
                         index,
                         begin,
                         length,
+                    });
+                }
+                (
+                    CommanderMsg::Piece {
+                        index,
+                        begin,
+                        block,
+                    },
+                    Some(peer),
+                ) => {
+                    debug!(
+                        "Peer {}:{} received piece Piece index = {}, begin = {}",
+                        envelope.ip_address, envelope.port, index, begin
+                    );
+                    peer.piece_tracker.add_piece(Piece {
+                        index,
+                        begin,
+                        block,
                     });
                 }
                 _ => (),

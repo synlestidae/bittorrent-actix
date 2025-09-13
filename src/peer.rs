@@ -1,11 +1,8 @@
-use crate::coordinator::{Coordinator, PeerMessage};
-use crate::filer::{Filer, WholePiece};
-use crate::metadata::{Info, Piece};
-use crate::piece_tracker::PieceTracker;
+use crate::coordinator::{Coordinator, PeerDisconnect, PeerMessage};
+use crate::metadata::PieceRequest;
 use actix::io::{FramedWrite, WriteHandler};
 use actix::prelude::*;
 use log::{debug, error, trace};
-use std::cmp::max;
 use std::io;
 use std::net::Ipv4Addr;
 use tokio::io::AsyncWriteExt;
@@ -20,22 +17,8 @@ pub struct Peer {
     coordinator_addr: Addr<Coordinator>,
     write_half: Option<OwnedWriteHalf>,
     assigned_pieces: Vec<u32>,
-    pieces: PieceTracker,
     writer: FramedWrite<BittorrentMessage, OwnedWriteHalf, BittorrentCodec>,
-    choking: bool,
-    interested: bool,
-    peer_id: [u8; 20],
-    pending_requests: isize,
 }
-
-#[derive(Clone)]
-struct RequestedPiece {
-    index: u32,
-    begin: u32,
-    length: u32,
-}
-
-const MAX_PIECE_REQUESTS: usize = 10;
 
 impl Peer {
     pub fn new(
@@ -45,7 +28,6 @@ impl Peer {
         info_hash: [u8; 20],
         peer_id: [u8; 20],
         tcp_stream: TcpStream,
-        info: &Info,
         ctx: &mut Context<Self>,
     ) -> Self {
         let (read_half, write_half) = tcp_stream.into_split();
@@ -64,84 +46,9 @@ impl Peer {
             coordinator_addr,
             write_half: None,
             assigned_pieces: vec![],
-            pieces: PieceTracker::new(info.pieces_length),
             writer,
-            choking: false,
-            interested: false,
-            peer_id,
-            pending_requests: 0,
         }
     }
-
-    pub fn do_things(&mut self) {
-        self.handle_pieces();
-        self.send_next_messages();
-    }
-
-    pub fn handle_pieces(&mut self) {
-        let complete_pieces = self.pieces.complete_pieces();
-        debug!("Have {} complete pieces", complete_pieces.len());
-        // TODO Need to dispatch these to filer and mark done
-    }
-
-    pub fn send_next_messages(&mut self) {
-        let max = max(MAX_PIECE_REQUESTS as isize - self.pending_requests, 0) as usize;
-
-        if self.assigned_pieces.len() == 0 {
-            trace!(
-                "Not sending messages to {}:{} because no assigned pieces",
-                self.ip_address, self.port
-            );
-            return;
-        }
-
-        if max == 0 {
-            trace!(
-                "Not sending messages to {}:{} because already have {} pending",
-                self.ip_address, self.port, self.pending_requests
-            );
-            return;
-        }
-
-        trace!(
-            "Can send a max of {} message(s) to {}:{}",
-            max, self.ip_address, self.port
-        );
-
-        let next_messages = self
-            .pieces
-            .next_pieces(&self.assigned_pieces, max)
-            .into_iter()
-            .map(|request| BittorrentMessage::Request {
-                index: request.index,
-                begin: request.begin,
-                length: request.length,
-            })
-            .collect::<Vec<_>>();
-
-        self.pending_requests += next_messages.len() as isize;
-
-        debug!(
-            "Sending {} messages to {}:{}",
-            next_messages.len(),
-            self.ip_address,
-            self.port,
-        );
-
-        for message in next_messages.into_iter() {
-            trace!(
-                "Sending to {}:{} - {:?}",
-                self.ip_address, self.port, message
-            );
-            self.writer.write(message);
-        }
-    }
-}
-
-#[derive(Message)]
-#[rtype(result = "Result<(), PeerError>")]
-pub struct SendMessage {
-    pub msg: BittorrentMessage,
 }
 
 #[derive(Message)]
@@ -187,58 +94,11 @@ impl Handler<RecvMessage> for Peer {
         );
         let ip_address = self.ip_address;
         let port = self.port;
-        let mut whole_pieces = Vec::new();
-
-        if let BittorrentMessage::Piece {
-            index,
-            begin,
-            block,
-        } = &msg.msg
-        {
-            debug!(
-                "Received piece index={}, begin={}, length={}",
-                *index,
-                *begin,
-                block.len()
-            );
-            self.pieces.add(Piece {
-                index: *index,
-                begin: *begin,
-                block: block.clone(),
-            });
-            if self.pieces.is_complete(*index) {
-                self.pieces.mark_complete(*index);
-                let piece = self.pieces.get_piece(*index);
-                whole_pieces.push(WholePiece {
-                    index: *index,
-                    piece,
-                    ip_address: self.ip_address,
-                    port: self.port,
-                });
-                debug!(
-                    "Got a complete piece from {}:{}",
-                    self.ip_address, self.port
-                );
-                self.pieces.remove(*index);
-                self.assigned_pieces.retain(|i| *i != *index);
-            }
-
-            if self.pending_requests > 0 {
-                self.pending_requests -= 1;
-            }
-        }
-
-        trace!("Received message was {:?}", msg.msg);
-
         self.coordinator_addr.do_send(PeerMessage {
             msg: msg.msg,
             ip_address,
             port,
         });
-
-        self.do_things();
-
-        // TODO deal with whole pieces
 
         Ok(())
     }
@@ -382,7 +242,7 @@ impl BittorrentMessage {
             7 => {
                 let index = u32::from_be_bytes([payload[0], payload[1], payload[2], payload[3]]);
                 let begin = u32::from_be_bytes([payload[4], payload[5], payload[6], payload[7]]);
-                let block = data[8..data.len()].iter().cloned().collect();
+                let block = payload[8..payload.len()].iter().cloned().collect();
 
                 Ok(BittorrentMessage::Piece {
                     index,
@@ -481,7 +341,7 @@ impl BittorrentMessage {
     }
 }
 
-#[derive(Message)]
+#[derive(Message, Debug)]
 #[rtype(result = "Result<(), PeerError>")]
 pub struct PeerControlEnvelope {
     pub ip_address: Ipv4Addr,
@@ -489,7 +349,7 @@ pub struct PeerControlEnvelope {
     pub messages: Vec<PeerControl>,
 }
 
-#[derive(Message)]
+#[derive(Message, Debug)]
 #[rtype(result = "Result<(), PeerError>")]
 pub enum PeerControl {
     AssignPieces { assigned_pieces: Vec<u32> },
@@ -497,21 +357,20 @@ pub enum PeerControl {
     UnchokeThem,
     Interested,
     NotInterested,
+    RequestPieces { piece_requests: Vec<PieceRequest> },
 }
 
 impl Handler<PeerControl> for Peer {
     type Result = Result<(), PeerError>;
 
     fn handle(&mut self, msg: PeerControl, _ctx: &mut Context<Self>) -> Self::Result {
-        debug!("Received PeerControl for {}:{}", self.ip_address, self.port);
-
         match msg {
             PeerControl::AssignPieces { assigned_pieces } => {
                 debug!(
                     "Assigned {} piece(s) to {}:{}",
+                    assigned_pieces.len(),
                     self.ip_address,
                     self.port,
-                    assigned_pieces.len()
                 );
                 self.assigned_pieces = assigned_pieces;
             }
@@ -531,9 +390,17 @@ impl Handler<PeerControl> for Peer {
                 debug!("Sending NotInterested to {}:{}", self.ip_address, self.port);
                 self.writer.write(BittorrentMessage::NotInterested);
             }
+            PeerControl::RequestPieces { piece_requests } => {
+                debug!("Sending PieceRequests to {}:{}", self.ip_address, self.port);
+                for piece_request in piece_requests.into_iter() {
+                    self.writer.write(BittorrentMessage::Request {
+                        index: piece_request.index,
+                        begin: piece_request.begin,
+                        length: piece_request.length,
+                    });
+                }
+            }
         }
-
-        self.do_things();
 
         Ok(())
     }
@@ -639,6 +506,10 @@ impl StreamHandler<Result<BittorrentMessage, PeerError>> for Peer {
         match msg_result {
             Err(err) => {
                 error!("Error receiving message: {:?}", err);
+                self.coordinator_addr.do_send(PeerDisconnect {
+                    ip_address: self.ip_address,
+                    port: self.port,
+                });
             }
             Ok(msg) => {
                 ctx.address().do_send(RecvMessage { msg });

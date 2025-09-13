@@ -1,5 +1,6 @@
 use crate::bencoding::{Bencoding, Position};
-use log::error;
+use log::{debug, error};
+use sha1::{Digest, Sha1};
 
 #[derive(Debug, Clone)]
 pub struct Metadata {
@@ -149,6 +150,24 @@ impl Info {
             position,
         })
     }
+
+    pub fn piece_correct(&self, piece_index: u32, data: &[u8]) -> bool {
+        if let Some(expected_sha1) = self.pieces.get(piece_index as usize) {
+            let mut digest = Sha1::new();
+            digest.update(&data);
+            let actual_sha1_digest = digest.finalize();
+            let actual_sha1 = actual_sha1_digest.as_slice();
+
+            debug!(
+                "Checking pieces match actual_sha1={:?}, expected_sha1={:?}",
+                actual_sha1, expected_sha1
+            );
+
+            return actual_sha1 == expected_sha1;
+        }
+
+        false
+    }
 }
 
 fn parse_file(element: &Bencoding) -> Result<FileInfo, MetadataError> {
@@ -219,7 +238,8 @@ pub struct PieceRequest {
     pub length: u32,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CompletePiece {
     pub index: u32,
-    pub block: Vec<u8>,
+    pub data: Vec<u8>,
 }
