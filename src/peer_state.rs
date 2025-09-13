@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use bitvec::{order::Msb0, vec::BitVec};
 
-use crate::{metadata::PieceRequest, piece_tracker::PieceTracker};
+use crate::{metadata::{Info, PieceRequest}, piece_tracker::PieceTracker};
 
 pub struct PeerState {
     pub handshake: bool,
@@ -21,7 +21,7 @@ pub struct PeerState {
 }
 
 impl PeerState {
-    pub fn new(piece_length: u32) -> Self {
+    pub fn new(info: Info) -> Self {
         Self {
             handshake: false,
             they_have: BitVec::new(),
@@ -33,7 +33,7 @@ impl PeerState {
             pieces_received: HashSet::new(),
             cancels: Vec::new(),
             they_want: Vec::new(),
-            piece_tracker: PieceTracker::new(piece_length),
+            piece_tracker: PieceTracker::new(info),
             piece_requests_sent: 0,
             piece_requests: Vec::new(),
         }

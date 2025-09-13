@@ -1,28 +1,31 @@
-use std::{cmp::min, collections::HashSet};
+use std::{
+    cmp::min,
+    collections::{HashMap, HashSet},
+};
 
-use crate::metadata::{CompletePiece, Piece, PieceRequest};
+use crate::metadata::{CompletePiece, Info, Piece, PieceRequest};
 
 #[derive(Debug)]
 pub struct PieceTracker {
-    pieces: Vec<Piece>,
+    pieces: HashMap<u32, Vec<Piece>>,
     requested_pieces: Vec<PieceRequest>,
-    piece_length: u32,
     complete_pieces: HashSet<u32>,
+    info: Info,
 }
 
 pub const PIECE_REQUEST_SIZE: u32 = 16_384;
 
 impl PieceTracker {
-    pub fn new(piece_length: u32) -> Self {
+    pub fn new(info: Info) -> Self {
         Self {
-            pieces: vec![],
+            pieces: HashMap::new(),
             requested_pieces: vec![],
-            piece_length,
             complete_pieces: HashSet::new(),
+            info
         }
     }
 
-    pub fn add_piece(&mut self, piece: Piece) {
+    pub fn add_piece(&mut self, mut piece: Piece) {
         self.requested_pieces.retain(|piece_request| {
             if piece_request.index != piece.index {
                 return true;
@@ -47,46 +50,65 @@ impl PieceTracker {
             true
         });
 
-        self.pieces.push(piece);
+        match self.pieces.get_mut(&piece.index) {
+            Some(pieces) => {
+                if pieces.len() == 0 {
+                    // shouldn't happen but whatever
+                    pieces.push(piece);
+                } else {
+                    let last_piece_idx = pieces.len() - 1;
+                    let last_piece = &mut pieces[last_piece_idx];
+                    if last_piece.begin + last_piece.block.len() as u32 == piece.begin {
+                        last_piece.block.append(&mut piece.block);
+                    } else {
+                        pieces.push(piece);
+                    }
+                }
+                return;
+            },
+            None => ()
+        }
+
+        self.pieces.insert(piece.index, vec![piece]);
     }
 
     pub fn remove(&mut self, piece_index: u32) {
-        self.pieces.retain(|p| p.index != piece_index);
+        self.pieces.remove(&piece_index);
     }
 
     pub fn is_complete(&self, piece_index: u32) -> bool {
-        let mut pieces: Vec<_> = self
-            .pieces
-            .iter()
-            .filter(|p| p.index == piece_index)
-            .collect();
-        pieces.sort_by_key(|p| p.begin);
-        if pieces.len() == 0 {
-            return false;
-        }
+        let pieces: &Vec<_> = match self.pieces.get(&piece_index) {
+            Some(p) => p,
+            None => return false,
+        };
 
-        let mut piece = pieces[0];
+        let mut piece = &pieces[0];
         for i in 1..pieces.len() {
-            let next_piece = pieces[i];
-            dbg!(piece, next_piece);
+            let next_piece = &pieces[i];
             if !(piece.begin + piece.block.len() as u32 <= next_piece.begin) {
                 return false;
             }
-            piece = next_piece;
+            piece = &next_piece;
         }
 
-        let is_complete = piece.begin + piece.block.len() as u32 >= self.piece_length;
-        dbg!(piece, self.piece_length, is_complete);
-        is_complete
+        piece.begin + piece.block.len() as u32 >= self.info.piece_length(piece_index)
     }
 
     pub fn mark_complete(&mut self, piece_index: u32) {
         self.complete_pieces.insert(piece_index);
     }
 
-    pub fn get_piece(&self, piece_index: u32) -> Vec<u8> {
-        let mut piece = vec![0u8; self.piece_length as usize];
-        for sub_piece in self.pieces.iter().filter(|p| p.index == piece_index) {
+    pub fn get_piece(&self, piece_index: u32) -> Option<Vec<u8>> {
+        let pieces = match self.pieces.get(&piece_index) {
+            Some(p) => p,
+            None => return None,
+        };
+        if pieces.len() == 1 {
+            return Some(pieces[0].block.clone());
+        }
+
+        let mut piece = vec![0u8; self.info.piece_length(piece_index) as usize];
+        for sub_piece in pieces.iter() {
             let mut i = 0;
             let sub_piece_len = sub_piece.block.len() as u32;
             while i < sub_piece_len && sub_piece.begin + i < piece.len() as u32 {
@@ -95,7 +117,7 @@ impl PieceTracker {
             }
         }
 
-        piece
+        Some(piece)
     }
 
     pub fn next_pieces(&mut self, assigned_piece_indexes: &[u32], max: usize) -> Vec<PieceRequest> {
@@ -106,7 +128,8 @@ impl PieceTracker {
 
         let pieces = self
             .pieces
-            .iter()
+            .values()
+            .flatten()
             .map(|p| PieceRequest {
                 index: p.index,
                 begin: p.begin,
@@ -119,7 +142,7 @@ impl PieceTracker {
             &pieces,
             assigned_piece_indexes,
             &self.complete_pieces,
-            self.piece_length,
+            &self.info,
             PIECE_REQUEST_SIZE,
         );
 
@@ -130,16 +153,10 @@ impl PieceTracker {
     }
 
     pub fn complete_pieces(&mut self) -> Vec<CompletePiece> {
-        let piece_indexes = self
-            .pieces
-            .iter()
-            .map(|p| p.index)
-            .collect::<HashSet<u32>>();
         let mut complete_pieces = Vec::new();
-
-        for piece_index in piece_indexes.iter() {
+        for piece_index in self.pieces.keys() {
             if self.is_complete(*piece_index) {
-                let complete_piece = self.get_piece(*piece_index);
+                let complete_piece = self.get_piece(*piece_index).unwrap();
                 complete_pieces.push(CompletePiece {
                     index: *piece_index,
                     data: complete_piece,
@@ -156,7 +173,7 @@ struct PieceIterator<'a> {
     new_pieces: Vec<PieceRequest>,
     assigned_pieces: &'a [u32],
     complete_pieces: &'a HashSet<u32>,
-    total_piece_length: u32,
+    info: &'a Info,
     request_size: u32,
     /// Piece that we analysing now
     piece_vec_index: usize,
@@ -169,7 +186,7 @@ impl<'a> PieceIterator<'a> {
         pieces: &'a Vec<PieceRequest>,
         assigned_pieces: &'a [u32],
         complete_pieces: &'a HashSet<u32>,
-        total_piece_length: u32,
+        info: &'a Info,
         request_size: u32,
     ) -> Self {
         Self {
@@ -177,7 +194,7 @@ impl<'a> PieceIterator<'a> {
             new_pieces: Vec::new(),
             assigned_pieces,
             complete_pieces,
-            total_piece_length,
+            info,
             request_size,
             offset_index: 0,
             piece_vec_index: 0,
@@ -224,12 +241,12 @@ impl<'a> Iterator for PieceIterator<'a> {
                 self.new_pieces.push(piece_request.clone());
                 return Some(piece_request);
             } else if piece.index != next_piece.index
-                && piece.begin + piece.length < self.total_piece_length
+                && piece.begin + piece.length < self.info.piece_length(piece.index)
             {
                 let begin = piece.begin + piece.length;
                 let length = {
-                    if begin + self.request_size > self.total_piece_length {
-                        self.total_piece_length - begin
+                    if begin + self.request_size > self.info.piece_length(piece.index) {
+                        self.info.piece_length(piece.index) - begin
                     } else {
                         self.request_size
                     }
@@ -252,13 +269,11 @@ impl<'a> Iterator for PieceIterator<'a> {
             let piece_end = piece.begin + piece.length;
             let new_begin = piece_end;
 
-            dbg!(piece_end, self.total_piece_length);
-            if piece_end < self.total_piece_length {
+            if piece_end < self.info.piece_length(piece.index) {
                 // Last piece needs filling
-                dbg!(new_begin, self.total_piece_length, self.request_size);
                 let new_length = {
-                    if new_begin + self.request_size > self.total_piece_length {
-                        self.total_piece_length - new_begin
+                    if new_begin + self.request_size > self.info.piece_length(piece.index) {
+                        self.info.piece_length(piece.index) - new_begin
                     } else {
                         self.request_size
                     }
@@ -278,15 +293,15 @@ impl<'a> Iterator for PieceIterator<'a> {
         // We can start on the assigned pieces now
         // First find one that we haven't seen yet
         // Create the first and yield it
-        for index in self.assigned_pieces.iter() {
-            if !pieces.iter().any(|p| p.index == *index) {
+        for piece_index in self.assigned_pieces.iter() {
+            if !pieces.iter().any(|p| p.index == *piece_index) {
                 let begin = self.offset_index;
-                let length = min(self.total_piece_length, self.request_size);
+                let length = min(self.info.piece_length(*piece_index), self.request_size);
 
                 self.offset_index += length;
 
                 let piece_request = PieceRequest {
-                    index: *index,
+                    index: *piece_index,
                     begin,
                     length,
                 };
@@ -804,12 +819,13 @@ mod test {
         });
 
         assert!(piece_tracker.is_complete(0));
-        assert_eq!(piece_tracker.complete_pieces(), vec![
-           CompletePiece {
-               index: 0,
-               data: vec![0, 1, 2, 3],
-           }
-        ]);
+        assert_eq!(
+            piece_tracker.complete_pieces(),
+            vec![CompletePiece {
+                index: 0,
+                data: vec![0, 1, 2, 3],
+            }]
+        );
     }
 
     #[test]

@@ -11,7 +11,7 @@ use tokio::net::TcpStream;
 use tokio::time::timeout;
 
 use crate::commander::{CommandSet, Commander, CommanderMsg, CommanderMsgEnvelope};
-use crate::filer::FilerEvent;
+use crate::filer::{Filer, FilerEvent};
 use crate::metadata::Info;
 use crate::peer::{BittorrentMessage, Peer, PeerError};
 use crate::tracker::TrackerResponse;
@@ -21,18 +21,17 @@ const TIMEOUT_CONNECT_SECS: u64 = 5;
 pub struct Coordinator {
     commander_addr: Addr<Commander>,
     peer_addrs: HashMap<(Ipv4Addr, u16), Addr<Peer>>,
-    info: Info,
     info_hash: [u8; 20],
 }
 
 impl Coordinator {
     pub fn new(info: Info, info_hash: [u8; 20], ctx: &mut Context<Self>) -> Self {
-        let commander_addr = Commander::new(info.clone(), ctx.address()).start();
+        let filer_addr = Filer::new(info.clone(), ctx.address()).start();
+        let commander_addr = Commander::new(info.clone(), ctx.address(), filer_addr).start();
 
         Self {
             commander_addr,
             peer_addrs: HashMap::new(),
-            info,
             info_hash,
         }
     }

@@ -1,5 +1,5 @@
 use std::{
-    cmp::{max, min},
+    cmp::{max},
     collections::HashMap,
     net::Ipv4Addr,
 };
@@ -9,14 +9,12 @@ use bitvec::{order::Msb0, vec::BitVec};
 use log::debug;
 
 use crate::{
-    coordinator::Coordinator,
-    metadata::{Info, Piece, PieceRequest},
-    peer::{PeerControl, PeerControlEnvelope},
-    peer_state::PeerState,
+    coordinator::Coordinator, filer::{Filer, WholePiece}, metadata::{Info, Piece, PieceRequest}, peer::{PeerControl, PeerControlEnvelope}, peer_state::PeerState
 };
 
 pub struct Commander {
     coordinator_addr: Addr<Coordinator>,
+    filer_addr: Addr<Filer>,
     we_have: BitVec<u8, Msb0>,
     peers: HashMap<(Ipv4Addr, u16), PeerState>,
     info: Info,
@@ -25,9 +23,10 @@ pub struct Commander {
 const MAX_PIECE_REQUESTS: usize = 10;
 
 impl Commander {
-    pub fn new(info: Info, coordinator_addr: Addr<Coordinator>) -> Commander {
+    pub fn new(info: Info, coordinator_addr: Addr<Coordinator>, filer_addr: Addr<Filer>) -> Commander {
         Commander {
             coordinator_addr,
+            filer_addr,
             we_have: BitVec::new(),
             peers: HashMap::new(),
             info,
@@ -51,7 +50,7 @@ impl Commander {
             }
 
             if peer_state.assigned_pieces.len() == 0 {
-                let len = self.info.pieces.len();
+                let len = self.info.num_pieces();
                 self.we_have.resize(len, false);
                 peer_state.they_have.resize(len, false);
 
@@ -68,6 +67,7 @@ impl Commander {
 
             // complete any pieces
             let complete_pieces = peer_state.piece_tracker.complete_pieces();
+            debug!("{} complete piece(s)", complete_pieces.len());
             for complete_piece in complete_pieces {
                 debug!("Piece {} is complete", complete_piece.index);
                 peer_state.piece_tracker.mark_complete(complete_piece.index);
@@ -78,6 +78,13 @@ impl Commander {
                     .piece_correct(complete_piece.index, &complete_piece.data)
                 {
                     debug!("Piece {} is correct", complete_piece.index);
+
+                    self.filer_addr.do_send(WholePiece {
+                        index: complete_piece.index,
+                        piece: complete_piece.data,
+                        ip_address: *ip_address,
+                        port: *port,
+                    });
 
                     // TODO we dump the piece, but need to send it to filer
                 } else {
@@ -156,7 +163,7 @@ impl Handler<CommanderMsgEnvelope> for Commander {
             {
                 self.peers.insert(
                     (envelope.ip_address, envelope.port),
-                    PeerState::new(self.info.pieces_length),
+                    PeerState::new(self.info.clone()),
                 );
             }
 
@@ -202,7 +209,7 @@ impl Handler<CommanderMsgEnvelope> for Commander {
                             envelope.ip_address, envelope.port, piece_index
                         );
 
-                        let new_size = max(self.info.pieces.len(), piece_index as usize);
+                        let new_size = max(self.info.num_pieces(), piece_index as usize);
                         peer.they_have.resize(new_size, false);
                         peer.they_have.set(piece_index as usize, true);
                     }

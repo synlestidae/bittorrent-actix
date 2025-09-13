@@ -168,6 +168,14 @@ impl Info {
 
         false
     }
+
+    pub fn piece_length(&self, _index: u32) -> u32 {
+        self.pieces_length
+    }
+
+    pub fn num_pieces(&self) -> usize {
+        self.pieces.len()
+    }
 }
 
 fn parse_file(element: &Bencoding) -> Result<FileInfo, MetadataError> {
