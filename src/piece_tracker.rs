@@ -1,6 +1,7 @@
 use std::{
     cmp::min,
     collections::{HashMap, HashSet},
+    sync::Arc,
 };
 
 use crate::metadata::{CompletePiece, Info, Piece, PieceRequest};
@@ -21,7 +22,7 @@ impl PieceTracker {
             pieces: HashMap::new(),
             requested_pieces: vec![],
             complete_pieces: HashSet::new(),
-            info
+            info,
         }
     }
 
@@ -50,23 +51,20 @@ impl PieceTracker {
             true
         });
 
-        match self.pieces.get_mut(&piece.index) {
-            Some(pieces) => {
-                if pieces.len() == 0 {
-                    // shouldn't happen but whatever
-                    pieces.push(piece);
+        if let Some(pieces) = self.pieces.get_mut(&piece.index) {
+            if pieces.is_empty() {
+                // shouldn't happen but whatever
+                pieces.push(piece);
+            } else {
+                let last_piece_idx = pieces.len() - 1;
+                let last_piece = &mut pieces[last_piece_idx];
+                if last_piece.begin + last_piece.block.len() as u32 == piece.begin {
+                    last_piece.block.append(&mut piece.block);
                 } else {
-                    let last_piece_idx = pieces.len() - 1;
-                    let last_piece = &mut pieces[last_piece_idx];
-                    if last_piece.begin + last_piece.block.len() as u32 == piece.begin {
-                        last_piece.block.append(&mut piece.block);
-                    } else {
-                        pieces.push(piece);
-                    }
+                    pieces.push(piece);
                 }
-                return;
-            },
-            None => ()
+            }
+            return;
         }
 
         self.pieces.insert(piece.index, vec![piece]);
@@ -85,10 +83,10 @@ impl PieceTracker {
         let mut piece = &pieces[0];
         for i in 1..pieces.len() {
             let next_piece = &pieces[i];
-            if !(piece.begin + piece.block.len() as u32 <= next_piece.begin) {
+            if piece.begin + piece.block.len() as u32 > next_piece.begin {
                 return false;
             }
-            piece = &next_piece;
+            piece = next_piece;
         }
 
         piece.begin + piece.block.len() as u32 >= self.info.piece_length(piece_index)
@@ -99,10 +97,7 @@ impl PieceTracker {
     }
 
     pub fn get_piece(&self, piece_index: u32) -> Option<Vec<u8>> {
-        let pieces = match self.pieces.get(&piece_index) {
-            Some(p) => p,
-            None => return None,
-        };
+        let pieces = self.pieces.get(&piece_index)?;
         if pieces.len() == 1 {
             return Some(pieces[0].block.clone());
         }
@@ -159,12 +154,12 @@ impl PieceTracker {
                 let complete_piece = self.get_piece(*piece_index).unwrap();
                 complete_pieces.push(CompletePiece {
                     index: *piece_index,
-                    data: complete_piece,
+                    data: Arc::from(complete_piece),
                 });
             }
         }
 
-        return complete_pieces;
+        complete_pieces
     }
 }
 

@@ -1,7 +1,11 @@
-use crate::coordinator::{Coordinator, PeerDisconnect, PeerMessage};
+use crate::commander::{CommandSet, PeerChangeEnvelope};
+use crate::coordinator::{Coordinator, PeerDisconnect};
 use crate::metadata::PieceRequest;
+use crate::peer_state::PeerChange;
 use actix::io::{FramedWrite, WriteHandler};
 use actix::prelude::*;
+use bitvec::order::Msb0;
+use bitvec::vec::BitVec;
 use log::{debug, error, trace};
 use std::io;
 use std::net::Ipv4Addr;
@@ -34,8 +38,8 @@ impl Peer {
         let codec = BittorrentCodec {
             handshake_sent: false,
             handshake_received: false,
-            info_hash: info_hash.clone(),
-            peer_id: peer_id.clone(),
+            info_hash,
+            peer_id,
         };
         ctx.add_stream(FramedRead::new(read_half, codec.clone()));
         let writer = FramedWrite::new(write_half, codec, ctx);
@@ -54,7 +58,7 @@ impl Peer {
 #[derive(Message)]
 #[rtype(result = "Result<(), PeerError>")]
 pub struct RecvMessage {
-    pub msg: BittorrentMessage,
+    pub msgs: Vec<BittorrentMessage>,
 }
 
 #[derive(Message, Debug)]
@@ -88,17 +92,22 @@ impl Handler<RecvMessage> for Peer {
     type Result = Result<(), PeerError>;
 
     fn handle(&mut self, msg: RecvMessage, _ctx: &mut Context<Self>) -> Self::Result {
-        debug!(
-            "Received RecvMessage from {}:{}",
-            self.ip_address, self.port
-        );
         let ip_address = self.ip_address;
         let port = self.port;
-        self.coordinator_addr.do_send(PeerMessage {
-            msg: msg.msg,
+        let mut peer_change: PeerChange = Default::default();
+        let mut command_set: CommandSet = Default::default();
+
+        for msg in msg.msgs.into_iter() {
+            peer_change.handle_message(msg)
+        }
+
+        command_set.peer_change.push(PeerChangeEnvelope {
             ip_address,
             port,
+            peer_change,
         });
+
+        self.coordinator_addr.do_send(command_set);
 
         Ok(())
     }
@@ -166,7 +175,7 @@ pub enum BittorrentMessage {
     Have {
         piece_index: u32,
     },
-    BitField {
+    Bitfield {
         bitfield: Vec<u8>,
     },
     Request {
@@ -222,7 +231,7 @@ impl BittorrentMessage {
                     u32::from_be_bytes([payload[0], payload[1], payload[2], payload[3]]);
                 Ok(BittorrentMessage::Have { piece_index })
             }
-            5 => Ok(BittorrentMessage::BitField {
+            5 => Ok(BittorrentMessage::Bitfield {
                 bitfield: payload.to_vec(),
             }),
             6 => {
@@ -242,7 +251,7 @@ impl BittorrentMessage {
             7 => {
                 let index = u32::from_be_bytes([payload[0], payload[1], payload[2], payload[3]]);
                 let begin = u32::from_be_bytes([payload[4], payload[5], payload[6], payload[7]]);
-                let block = payload[8..payload.len()].iter().cloned().collect();
+                let block = payload[8..payload.len()].to_vec();
 
                 Ok(BittorrentMessage::Piece {
                     index,
@@ -284,7 +293,7 @@ impl BittorrentMessage {
                 v.extend_from_slice(&piece_index.to_be_bytes());
                 v
             }
-            BittorrentMessage::BitField { bitfield } => {
+            BittorrentMessage::Bitfield { bitfield } => {
                 let mut v = Vec::with_capacity(4 + 1 + bitfield.len());
                 v.extend_from_slice(&(1 + bitfield.len() as u32).to_be_bytes());
                 v.push(5);
@@ -352,12 +361,27 @@ pub struct PeerControlEnvelope {
 #[derive(Message, Debug)]
 #[rtype(result = "Result<(), PeerError>")]
 pub enum PeerControl {
-    AssignPieces { assigned_pieces: Vec<u32> },
+    AssignPieces {
+        assigned_pieces: Vec<u32>,
+    },
     ChokeThem,
     UnchokeThem,
     Interested,
     NotInterested,
-    RequestPieces { piece_requests: Vec<PieceRequest> },
+    RequestPieces {
+        piece_requests: Vec<PieceRequest>,
+    },
+    UploadPieceToThem {
+        index: u32,
+        begin: u32,
+        block: Vec<u8>,
+    },
+    HavePiece {
+        index: u32,
+    },
+    Bitfield {
+        bitfield: BitVec<u8, Msb0>,
+    },
 }
 
 impl Handler<PeerControl> for Peer {
@@ -400,6 +424,26 @@ impl Handler<PeerControl> for Peer {
                     });
                 }
             }
+            PeerControl::UploadPieceToThem {
+                index,
+                begin,
+                block,
+            } => {
+                self.writer.write(BittorrentMessage::Piece {
+                    index,
+                    begin,
+                    block,
+                });
+            }
+            PeerControl::HavePiece { index } => {
+                self.writer
+                    .write(BittorrentMessage::Have { piece_index: index });
+            }
+            PeerControl::Bitfield { bitfield } => {
+                self.writer.write(BittorrentMessage::Bitfield {
+                    bitfield: bitfield.into_vec(),
+                });
+            }
         }
 
         Ok(())
@@ -415,14 +459,13 @@ struct BittorrentCodec {
 }
 
 impl Decoder for BittorrentCodec {
-    type Item = BittorrentMessage;
+    type Item = Vec<BittorrentMessage>;
     type Error = PeerError;
 
     fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
-        trace!("Decoding message");
         if !self.handshake_received {
             trace!("Decoding handshake first");
-            if src.len() < 1 {
+            if src.is_empty() {
                 trace!("Have 0 bytes for handshake but need more");
                 return Ok(None);
             }
@@ -452,25 +495,24 @@ impl Decoder for BittorrentCodec {
         }
 
         // check we have enough bytes
-        if src.len() < 4 {
-            trace!("Have {} bytes so do not know length", src.len());
+        let mut messages = Vec::new();
+        while src.len() > 4 {
+            let len = u32::from_be_bytes([src[0], src[1], src[2], src[3]]);
+            let total_len = len as usize + 4;
+            if src.len() < total_len {
+                return Ok(Some(messages));
+            }
+
+            // read the message
+            let msg = BittorrentMessage::deserialize(&src.split_to(total_len))?;
+            messages.push(msg);
+        }
+
+        if messages.len() == 0 {
             return Ok(None);
         }
-        trace!("Reading message from {} bytes", src.len());
-        let len = u32::from_be_bytes([src[0], src[1], src[2], src[3]]);
-        let total_len = len as usize + 4;
-        if src.len() < total_len {
-            trace!("Have {} bytes but need at least {}", src.len(), total_len);
 
-            return Ok(None);
-        }
-
-        // read the message
-        trace!("Reading {} bytes", total_len);
-        let msg = BittorrentMessage::deserialize(&src.split_to(total_len))?;
-
-        trace!("Successfully deserialised message");
-        Ok(Some(msg))
+        Ok(Some(messages))
     }
 }
 
@@ -489,7 +531,6 @@ impl Encoder<BittorrentMessage> for BittorrentCodec {
 
             self.handshake_sent = true;
         }
-        trace!("Sending {:?}", item);
 
         dst.extend_from_slice(&item.serialize());
 
@@ -497,10 +538,10 @@ impl Encoder<BittorrentMessage> for BittorrentCodec {
     }
 }
 
-impl StreamHandler<Result<BittorrentMessage, PeerError>> for Peer {
+impl StreamHandler<Result<Vec<BittorrentMessage>, PeerError>> for Peer {
     fn handle(
         &mut self,
-        msg_result: Result<BittorrentMessage, PeerError>,
+        msg_result: Result<Vec<BittorrentMessage>, PeerError>,
         ctx: &mut Self::Context,
     ) {
         match msg_result {
@@ -511,8 +552,8 @@ impl StreamHandler<Result<BittorrentMessage, PeerError>> for Peer {
                     port: self.port,
                 });
             }
-            Ok(msg) => {
-                ctx.address().do_send(RecvMessage { msg });
+            Ok(msgs) => {
+                ctx.address().do_send(RecvMessage { msgs });
             }
         }
     }

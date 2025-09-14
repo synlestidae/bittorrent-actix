@@ -5,20 +5,22 @@ use std::time::Duration;
 
 use actix::prelude::*;
 use bitvec::vec::BitVec;
-use log::{debug, error};
+use log::{debug, error, trace};
 use rand::Rng;
 use tokio::net::TcpStream;
 use tokio::time::timeout;
 
 use crate::commander::{CommandSet, Commander, CommanderMsg, CommanderMsgEnvelope};
-use crate::filer::{Filer, FilerEvent};
+use crate::filer::{Filer, FilerEvent, RequestPieceEnvelope};
 use crate::metadata::Info;
-use crate::peer::{BittorrentMessage, Peer, PeerError};
+use crate::peer::{BittorrentMessage, Peer, PeerControl, PeerError};
+use crate::peer_state::PeerChange;
 use crate::tracker::TrackerResponse;
 
 const TIMEOUT_CONNECT_SECS: u64 = 5;
 
 pub struct Coordinator {
+    filer_addr: Addr<Filer>,
     commander_addr: Addr<Commander>,
     peer_addrs: HashMap<(Ipv4Addr, u16), Addr<Peer>>,
     info_hash: [u8; 20],
@@ -27,9 +29,11 @@ pub struct Coordinator {
 impl Coordinator {
     pub fn new(info: Info, info_hash: [u8; 20], ctx: &mut Context<Self>) -> Self {
         let filer_addr = Filer::new(info.clone(), ctx.address()).start();
-        let commander_addr = Commander::new(info.clone(), ctx.address(), filer_addr).start();
+        let commander_addr =
+            Commander::new(info.clone(), ctx.address(), filer_addr.clone()).start();
 
         Self {
+            filer_addr,
             commander_addr,
             peer_addrs: HashMap::new(),
             info_hash,
@@ -59,14 +63,6 @@ pub struct NewPeer {
 pub struct PeerDisconnect {
     pub ip_address: Ipv4Addr,
     pub port: u16,
-}
-
-#[derive(Message)]
-#[rtype(result = "()")]
-pub struct PeerMessage {
-    pub ip_address: Ipv4Addr,
-    pub port: u16,
-    pub msg: BittorrentMessage,
 }
 
 impl Handler<TrackerUpdate> for Coordinator {
@@ -102,7 +98,7 @@ impl Handler<NewPeer> for Coordinator {
     fn handle(&mut self, msg: NewPeer, ctx: &mut Context<Self>) -> Self::Result {
         debug!("Received {:?}", msg);
         let coordinator_addr = ctx.address();
-        let info_hash = self.info_hash.clone();
+        let info_hash = self.info_hash;
 
         let ip_address = msg.ip_address;
         let port = msg.port;
@@ -139,7 +135,7 @@ impl Handler<NewPeer> for Coordinator {
                         Ok(t) => t,
                         Err(err) => {
                             error!("Peer {}:{} had error: {:?}", msg.ip_address, msg.port, err);
-                            return Err(PeerError::from(err));
+                            return Err(err);
                         }
                     };
                     let peer_addr = Peer::create(|ctx| {
@@ -169,127 +165,52 @@ impl Handler<NewPeer> for Coordinator {
     }
 }
 
-impl Handler<PeerMessage> for Coordinator {
-    type Result = ();
-
-    fn handle(&mut self, msg: PeerMessage, _ctx: &mut Context<Self>) -> Self::Result {
-        debug!("Received PeerMessage from {}:{}", msg.ip_address, msg.port);
-
-        match msg.msg {
-            BittorrentMessage::Choke => self.commander_addr.do_send(CommanderMsgEnvelope {
-                ip_address: msg.ip_address,
-                port: msg.port,
-                msgs: vec![CommanderMsg::PeerChange {
-                    choking: Some(true),
-                    interested: None,
-                    bitfield: None,
-                    have: None,
-                }],
-            }),
-            BittorrentMessage::Unchoke => self.commander_addr.do_send(CommanderMsgEnvelope {
-                ip_address: msg.ip_address,
-                port: msg.port,
-                msgs: vec![CommanderMsg::PeerChange {
-                    choking: Some(false),
-                    interested: None,
-                    bitfield: None,
-                    have: None,
-                }],
-            }),
-            BittorrentMessage::Interested => self.commander_addr.do_send(CommanderMsgEnvelope {
-                ip_address: msg.ip_address,
-                port: msg.port,
-                msgs: vec![CommanderMsg::PeerChange {
-                    choking: None,
-                    interested: Some(true),
-                    bitfield: None,
-                    have: None,
-                }],
-            }),
-            BittorrentMessage::NotInterested => self.commander_addr.do_send(CommanderMsgEnvelope {
-                ip_address: msg.ip_address,
-                port: msg.port,
-                msgs: vec![CommanderMsg::PeerChange {
-                    choking: None,
-                    interested: Some(false),
-                    bitfield: None,
-                    have: None,
-                }],
-            }),
-            BittorrentMessage::Have { piece_index } => {
-                self.commander_addr.do_send(CommanderMsgEnvelope {
-                    ip_address: msg.ip_address,
-                    port: msg.port,
-                    msgs: vec![CommanderMsg::PeerChange {
-                        choking: None,
-                        interested: None,
-                        bitfield: None,
-                        have: Some(piece_index),
-                    }],
-                })
-            }
-            BittorrentMessage::BitField { bitfield } => {
-                let bitfield = BitVec::from_vec(bitfield);
-                self.commander_addr.do_send(CommanderMsgEnvelope {
-                    ip_address: msg.ip_address,
-                    port: msg.port,
-                    msgs: vec![CommanderMsg::PeerChange {
-                        choking: None,
-                        interested: None,
-                        bitfield: Some(bitfield),
-                        have: None,
-                    }],
-                })
-            }
-            BittorrentMessage::Piece {
-                index,
-                begin,
-                block,
-            } => self.commander_addr.do_send(CommanderMsgEnvelope {
-                ip_address: msg.ip_address,
-                port: msg.port,
-                msgs: vec![CommanderMsg::Piece {
-                    index,
-                    begin,
-                    block,
-                }],
-            }),
-            BittorrentMessage::KeepAlive => (),
-            BittorrentMessage::Request {
-                index,
-                begin,
-                length,
-            } => self.commander_addr.do_send(CommanderMsgEnvelope {
-                ip_address: msg.ip_address,
-                port: msg.port,
-                msgs: vec![CommanderMsg::PieceRequest {
-                    index,
-                    begin,
-                    length,
-                }],
-            }),
-            BittorrentMessage::Cancel { .. } => (),
-            BittorrentMessage::Port { .. } => (),
-        };
-    }
-}
-
 impl Handler<CommandSet> for Coordinator {
     type Result = ();
 
     fn handle(&mut self, msg: CommandSet, _ctx: &mut Context<Self>) -> Self::Result {
         for peer_control in msg.peer_control.into_iter() {
-            match self
+            if let Some(peer_addr) = self
                 .peer_addrs
                 .get(&(peer_control.ip_address, peer_control.port))
             {
-                Some(peer_addr) => {
-                    for message in peer_control.messages {
-                        peer_addr.do_send(message);
-                    }
+                for message in peer_control.messages {
+                    trace!("Sending {:?}", message);
+                    peer_addr.do_send(message);
                 }
-                None => (),
             }
+        }
+
+        for peer_control_global in msg.peer_control_global.into_iter() {
+            match peer_control_global {
+                PeerControlGlobal::HavePiece { piece_index } => {
+                    for ((ip_address, port), peer_addr) in self.peer_addrs.iter() {
+                        peer_addr.do_send(PeerControl::HavePiece { index: piece_index });
+                        self.commander_addr.do_send(CommanderMsgEnvelope {
+                            ip_address: *ip_address,
+                            port: *port,
+                            msgs: vec![],
+                        });
+                    }
+                    // for each peer, mark us as having piece
+                }
+            }
+        }
+
+        for envelope in msg.peer_change.into_iter() {
+            self.commander_addr.do_send(CommanderMsgEnvelope {
+                ip_address: envelope.ip_address,
+                port: envelope.port,
+                msgs: vec![CommanderMsg::PeerChange {
+                    peer_change: envelope.peer_change,
+                }],
+            });
+        }
+
+        if msg.piece_requests_to_us.len() > 0 {
+            self.filer_addr.do_send(RequestPieceEnvelope {
+                request_pieces: msg.piece_requests_to_us,
+            });
         }
     }
 }
@@ -328,4 +249,9 @@ impl Handler<PeerDisconnect> for Coordinator {
             msgs: vec![CommanderMsg::RemovePeer],
         });
     }
+}
+
+#[derive(Debug)]
+pub enum PeerControlGlobal {
+    HavePiece { piece_index: u32 },
 }

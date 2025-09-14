@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use crate::bencoding::{Bencoding, Position};
 use log::{debug, error};
 use sha1::{Digest, Sha1};
@@ -154,7 +156,7 @@ impl Info {
     pub fn piece_correct(&self, piece_index: u32, data: &[u8]) -> bool {
         if let Some(expected_sha1) = self.pieces.get(piece_index as usize) {
             let mut digest = Sha1::new();
-            digest.update(&data);
+            digest.update(data);
             let actual_sha1_digest = digest.finalize();
             let actual_sha1 = actual_sha1_digest.as_slice();
 
@@ -249,5 +251,5 @@ pub struct PieceRequest {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CompletePiece {
     pub index: u32,
-    pub data: Vec<u8>,
+    pub data: Arc<[u8]>,
 }
