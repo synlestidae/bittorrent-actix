@@ -4,7 +4,6 @@ use std::net::Ipv4Addr;
 use std::time::Duration;
 
 use actix::prelude::*;
-use bitvec::vec::BitVec;
 use log::{debug, error, trace};
 use rand::Rng;
 use tokio::net::TcpStream;
@@ -13,8 +12,7 @@ use tokio::time::timeout;
 use crate::commander::{CommandSet, Commander, CommanderMsg, CommanderMsgEnvelope};
 use crate::filer::{Filer, FilerEvent, RequestPieceEnvelope};
 use crate::metadata::Info;
-use crate::peer::{BittorrentMessage, Peer, PeerControl, PeerError};
-use crate::peer_state::PeerChange;
+use crate::peer::{Peer, PeerControl, PeerError};
 use crate::tracker::TrackerResponse;
 
 const TIMEOUT_CONNECT_SECS: u64 = 5;
@@ -207,7 +205,7 @@ impl Handler<CommandSet> for Coordinator {
             });
         }
 
-        if msg.piece_requests_to_us.len() > 0 {
+        if !msg.piece_requests_to_us.is_empty() {
             self.filer_addr.do_send(RequestPieceEnvelope {
                 request_pieces: msg.piece_requests_to_us,
             });

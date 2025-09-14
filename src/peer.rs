@@ -508,7 +508,7 @@ impl Decoder for BittorrentCodec {
             messages.push(msg);
         }
 
-        if messages.len() == 0 {
+        if messages.is_empty() {
             return Ok(None);
         }
 

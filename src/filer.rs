@@ -101,10 +101,7 @@ impl Handler<RequestPieceEnvelope> for Filer {
             }
 
             let block = piece[request_piece.begin as usize
-                ..(request_piece.begin + request_piece.length) as usize]
-                .iter()
-                .cloned()
-                .collect();
+                ..(request_piece.begin + request_piece.length) as usize].to_vec();
 
             self.coordinator_addr.do_send(CommandSet {
                 peer_control: vec![PeerControlEnvelope {
@@ -113,7 +110,7 @@ impl Handler<RequestPieceEnvelope> for Filer {
                     messages: vec![PeerControl::UploadPieceToThem {
                         index: request_piece.index,
                         begin: request_piece.begin,
-                        block: block,
+                        block,
                     }],
                 }], // TODO
                 peer_control_global: vec![],

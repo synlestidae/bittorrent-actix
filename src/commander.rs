@@ -1,14 +1,13 @@
-use std::{cmp::max, collections::HashMap, net::Ipv4Addr, sync::Arc};
+use std::{cmp::max, collections::HashMap, net::Ipv4Addr};
 
 use actix::prelude::*;
 use bitvec::{order::Msb0, vec::BitVec};
-use log::{debug, trace};
 
 use crate::{
     coordinator::{Coordinator, PeerControlGlobal},
-    filer::{Filer, RequestPiece, WholePiece},
-    metadata::{CompletePiece, Info, Piece, PieceRequest},
-    peer::{PeerControl, PeerControlEnvelope},
+    filer::{Filer, RequestPiece},
+    metadata::{CompletePiece, Info},
+    peer::PeerControlEnvelope,
     peer_state::{PeerChange, PeerState},
 };
 

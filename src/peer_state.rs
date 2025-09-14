@@ -8,7 +8,7 @@ use crate::{
     filer::RequestPiece,
     metadata::{CompletePiece, Info, Piece, PieceRequest},
     peer::{
-        BittorrentMessage, BittorrentMessageError, HavePiece, PeerControl, PeerControlEnvelope,
+        BittorrentMessage, PeerControl,
     },
     piece_tracker::PieceTracker,
 };
@@ -137,7 +137,7 @@ impl PeerState {
 
             let assigned_pieces: Vec<u32> = self.they_have.iter_ones().map(|i| i as u32).collect();
 
-            if assigned_pieces.len() > 0 {
+            if !assigned_pieces.is_empty() {
                 trace!("Assigning pieces to download from {}:{}", ip_address, port);
                 if !assigned_pieces.is_empty() {
                     self.set_piece_assignment(assigned_pieces.to_vec());
@@ -160,7 +160,7 @@ impl PeerState {
         // complete any pieces
         let complete_pieces = self.piece_tracker.complete_pieces();
         let mut correct_pieces = Vec::new();
-        if complete_pieces.len() > 0 {
+        if !complete_pieces.is_empty() {
             debug!("{} complete piece(s)", complete_pieces.len());
         }
         for complete_piece in complete_pieces.into_iter() {
@@ -199,8 +199,8 @@ impl PeerState {
         // piece requests to US
         for piece_request in self.piece_requests.drain(..) {
             piece_requests_to_us.push(RequestPiece {
-                ip_address: ip_address,
-                port: port,
+                ip_address,
+                port,
                 index: piece_request.index,
                 begin: piece_request.begin,
                 length: piece_request.length,
