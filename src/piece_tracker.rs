@@ -312,15 +312,17 @@ impl<'a> Iterator for PieceIterator<'a> {
 
 #[cfg(test)]
 mod test {
-    use std::collections::HashSet;
+    use std::{collections::HashSet, sync::Arc};
 
     use crate::{
-        metadata::{CompletePiece, Piece, PieceRequest},
+        bencoding::Position,
+        metadata::{CompletePiece, Info, ModeFile, Piece, PieceRequest},
         piece_tracker::{self, PIECE_REQUEST_SIZE, PieceIterator, PieceTracker},
     };
 
     #[test]
     pub fn test_piece_iterator_zero_pieces() {
+        let info = info(1024);
         let pieces = vec![];
         let assigned_piece_indexes = vec![];
         let complete_pieces = HashSet::new();
@@ -328,7 +330,7 @@ mod test {
             &pieces,
             &assigned_piece_indexes,
             &complete_pieces,
-            1024,
+            &info,
             PIECE_REQUEST_SIZE,
         );
 
@@ -342,13 +344,14 @@ mod test {
             begin: 0,
             length: 500,
         }];
+        let info = info(1024);
         let assigned_piece_indexes = vec![];
         let complete_pieces = HashSet::new();
         let mut piece_iterator = PieceIterator::new(
             &pieces,
             &assigned_piece_indexes,
             &complete_pieces,
-            1024,
+            &info,
             PIECE_REQUEST_SIZE,
         );
 
@@ -370,30 +373,37 @@ mod test {
             begin: 0,
             length: 500,
         }];
+        let info = info(500);
         let assigned_piece_indexes = vec![];
         let complete_pieces = HashSet::new();
         let mut piece_iterator = PieceIterator::new(
             &pieces,
             &assigned_piece_indexes,
             &complete_pieces,
-            500,
+            &info,
             PIECE_REQUEST_SIZE,
         );
 
         assert_eq!(piece_iterator.next(), None);
     }
 
-    //#[test]
+    #[test]
     pub fn test_piece_iterator_one_piece_two_new_pieces() {
         let pieces = vec![PieceRequest {
             index: 0,
             begin: 0,
             length: 25,
         }];
+        let info = info(75);
         let assigned_piece_indexes = vec![];
         let complete_pieces = HashSet::new();
-        let mut piece_iterator =
-            PieceIterator::new(&pieces, &assigned_piece_indexes, &complete_pieces, 75, 25);
+        let mut piece_iterator = PieceIterator::new(
+            &pieces,
+            &assigned_piece_indexes,
+            &complete_pieces,
+            &info,
+            25,
+        );
 
         assert_eq!(
             piece_iterator.next(),
@@ -416,7 +426,7 @@ mod test {
 
     #[test]
     pub fn test_piece_iterator_two_pieces_one_new_piece_in_gap() {
-        let mut pieces = vec![
+        let pieces = vec![
             PieceRequest {
                 index: 0,
                 begin: 0,
@@ -428,10 +438,16 @@ mod test {
                 length: 25,
             },
         ];
+        let info = info(75);
         let assigned_piece_indexes = vec![];
         let complete_pieces = HashSet::new();
-        let mut piece_iterator =
-            PieceIterator::new(&pieces, &assigned_piece_indexes, &complete_pieces, 75, 25);
+        let mut piece_iterator = PieceIterator::new(
+            &pieces,
+            &assigned_piece_indexes,
+            &complete_pieces,
+            &info,
+            25,
+        );
 
         assert_eq!(
             piece_iterator.next(),
@@ -446,7 +462,7 @@ mod test {
 
     #[test]
     pub fn test_piece_iterator_two_pieces_two_new_pieces_in_two_gap() {
-        let mut pieces = vec![
+        let pieces = vec![
             PieceRequest {
                 index: 0,
                 begin: 0,
@@ -459,9 +475,15 @@ mod test {
             },
         ];
         let assigned_piece_indexes = vec![];
+        let info = info(100);
         let complete_pieces = HashSet::new();
-        let mut piece_iterator =
-            PieceIterator::new(&pieces, &assigned_piece_indexes, &complete_pieces, 100, 25);
+        let mut piece_iterator = PieceIterator::new(
+            &pieces,
+            &assigned_piece_indexes,
+            &complete_pieces,
+            &info,
+            25,
+        );
 
         assert_eq!(
             piece_iterator.next(),
@@ -491,9 +513,15 @@ mod test {
         }];
         let assigned_piece_indexes = vec![];
         let complete_pieces = HashSet::new();
-        let new_pieces: Vec<PieceRequest> =
-            PieceIterator::new(&pieces, &assigned_piece_indexes, &complete_pieces, 250, 33)
-                .collect();
+        let info = info(250);
+        let new_pieces: Vec<PieceRequest> = PieceIterator::new(
+            &pieces,
+            &assigned_piece_indexes,
+            &complete_pieces,
+            &info,
+            33,
+        )
+        .collect();
         let expected_pieces: Vec<PieceRequest> = vec![
             PieceRequest {
                 index: 0,
@@ -537,7 +565,7 @@ mod test {
 
     #[test]
     pub fn test_piece_iterator_fills_two_pieces_awkward_numbers() {
-        let mut pieces = vec![
+        let pieces = vec![
             PieceRequest {
                 index: 0,
                 begin: 0,
@@ -551,9 +579,15 @@ mod test {
         ];
         let assigned_piece_indexes = vec![];
         let complete_pieces = HashSet::new();
-        let new_pieces: Vec<PieceRequest> =
-            PieceIterator::new(&pieces, &assigned_piece_indexes, &complete_pieces, 100, 33)
-                .collect();
+        let info = info(100);
+        let new_pieces: Vec<PieceRequest> = PieceIterator::new(
+            &pieces,
+            &assigned_piece_indexes,
+            &complete_pieces,
+            &info,
+            33,
+        )
+        .collect();
         let expected_pieces: Vec<PieceRequest> = vec![
             PieceRequest {
                 index: 0,
@@ -589,11 +623,12 @@ mod test {
     pub fn test_piece_iterator_fills_one_assigned_piece() {
         let assigned_piece_indexes = vec![0];
         let complete_pieces = HashSet::new();
+        let info = info(100);
         let new_pieces: Vec<PieceRequest> = PieceIterator::new(
             &Vec::new(),
             &assigned_piece_indexes,
             &complete_pieces,
-            100,
+            &info,
             33,
         )
         .collect();
@@ -632,9 +667,15 @@ mod test {
             length: 33,
         }];
         let complete_pieces = HashSet::new();
-        let new_pieces: Vec<PieceRequest> =
-            PieceIterator::new(&pieces, &assigned_piece_indexes, &complete_pieces, 101, 55)
-                .collect();
+        let info = info(101);
+        let new_pieces: Vec<PieceRequest> = PieceIterator::new(
+            &pieces,
+            &assigned_piece_indexes,
+            &complete_pieces,
+            &info,
+            55,
+        )
+        .collect();
         let expected_pieces: Vec<PieceRequest> = vec![
             PieceRequest {
                 index: 0,
@@ -670,9 +711,15 @@ mod test {
             length: 33,
         }];
         let complete_pieces = HashSet::new();
-        let new_pieces: Vec<PieceRequest> =
-            PieceIterator::new(&pieces, &assigned_piece_indexes, &complete_pieces, 101, 55)
-                .collect();
+        let info = info(101);
+        let new_pieces: Vec<PieceRequest> = PieceIterator::new(
+            &pieces,
+            &assigned_piece_indexes,
+            &complete_pieces,
+            &info,
+            55,
+        )
+        .collect();
         let expected_pieces: Vec<PieceRequest> = vec![
             PieceRequest {
                 index: 0,
@@ -729,12 +776,13 @@ mod test {
                 length: 12283,
             }, // would complete it correctly
         ];
+        let info = info(piece_length);
 
         let new_pieces: Vec<PieceRequest> = PieceIterator::new(
             &existing_pieces,
             &assigned_piece_indexes,
             &complete_pieces,
-            piece_length,
+            &info,
             PIECE_REQUEST_SIZE,
         )
         .collect();
@@ -746,8 +794,7 @@ mod test {
     pub fn test_piece_tracker_requests_gap_intersect_left() {
         let assigned_piece_indexes = vec![0];
         let piece_length = PIECE_REQUEST_SIZE * 3;
-
-        let mut piece_tracker = PieceTracker::new(piece_length);
+        let mut piece_tracker = PieceTracker::new(info(piece_length));
         let first_piece_requests = piece_tracker.next_pieces(&assigned_piece_indexes, 100);
         piece_tracker.add_piece(Piece {
             index: 0,
@@ -788,7 +835,7 @@ mod test {
 
     #[test]
     pub fn test_piece_tracker_reports_zero_complete_pieces() {
-        let mut piece_tracker = PieceTracker::new(4);
+        let mut piece_tracker = PieceTracker::new(info(4));
         piece_tracker.add_piece(Piece {
             index: 0,
             begin: 0,
@@ -801,7 +848,7 @@ mod test {
 
     #[test]
     pub fn test_piece_tracker_reports_one_complete_piece() {
-        let mut piece_tracker = PieceTracker::new(4);
+        let mut piece_tracker = PieceTracker::new(info(4));
         piece_tracker.add_piece(Piece {
             index: 0,
             begin: 0,
@@ -818,14 +865,14 @@ mod test {
             piece_tracker.complete_pieces(),
             vec![CompletePiece {
                 index: 0,
-                data: vec![0, 1, 2, 3],
+                data: Arc::from(vec![0, 1, 2, 3]),
             }]
         );
     }
 
     #[test]
     pub fn test_piece_tracker_reports_zero_complete_pieces_after_removing_complete() {
-        let mut piece_tracker = PieceTracker::new(4);
+        let mut piece_tracker = PieceTracker::new(info(4));
         piece_tracker.add_piece(Piece {
             index: 0,
             begin: 0,
@@ -840,5 +887,18 @@ mod test {
         piece_tracker.remove(0);
 
         assert_eq!(piece_tracker.complete_pieces(), vec![]);
+    }
+
+    fn info(pieces_length: u32) -> Info {
+        Info {
+            pieces_length,
+            pieces: vec![vec![0].into_iter().cycle().take(20).collect()],
+            file_info: ModeFile::Single { length: 10 },
+            name: String::from("test.txt").into_bytes(),
+            position: Position {
+                offset: 0,
+                length: 10,
+            },
+        }
     }
 }

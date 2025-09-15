@@ -101,7 +101,8 @@ impl Handler<RequestPieceEnvelope> for Filer {
             }
 
             let block = piece[request_piece.begin as usize
-                ..(request_piece.begin + request_piece.length) as usize].to_vec();
+                ..(request_piece.begin + request_piece.length) as usize]
+                .to_vec();
 
             self.coordinator_addr.do_send(CommandSet {
                 peer_control: vec![PeerControlEnvelope {

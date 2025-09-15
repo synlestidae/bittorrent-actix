@@ -27,8 +27,7 @@ pub struct Coordinator {
 impl Coordinator {
     pub fn new(info: Info, info_hash: [u8; 20], ctx: &mut Context<Self>) -> Self {
         let filer_addr = Filer::new(info.clone(), ctx.address()).start();
-        let commander_addr =
-            Commander::new(info.clone(), ctx.address(), filer_addr.clone()).start();
+        let commander_addr = Commander::new(info.clone(), ctx.address()).start();
 
         Self {
             filer_addr,
@@ -211,12 +210,6 @@ impl Handler<CommandSet> for Coordinator {
             });
         }
     }
-}
-
-struct RequestedPiece {
-    pub index: u32,
-    pub begin: u32,
-    pub length: u32,
 }
 
 #[derive(Message)]

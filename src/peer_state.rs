@@ -7,9 +7,7 @@ use crate::{
     coordinator::PeerControlGlobal,
     filer::RequestPiece,
     metadata::{CompletePiece, Info, Piece, PieceRequest},
-    peer::{
-        BittorrentMessage, PeerControl,
-    },
+    peer::{BittorrentMessage, PeerControl},
     piece_tracker::PieceTracker,
 };
 
@@ -27,10 +25,8 @@ pub struct PeerState {
     pub us_choking: bool,
     pub us_interested: bool,
     pub assigned_pieces: Vec<u32>,
-    pub pieces_received_from_them: Vec<u32>,
     pub pieces_received_from_other_peers: HashSet<u32>,
-    pub cancels: Vec<PieceRequest>,
-    pub they_want: Vec<u32>,
+    pub pieces_they_have: Vec<u32>,
     pub piece_tracker: PieceTracker,
     pub piece_requests_sent: i32,
     pub piece_requests: Vec<PieceRequest>,
@@ -55,9 +51,7 @@ impl PeerState {
             us_interested: false,
             assigned_pieces: Vec::new(),
             pieces_received_from_other_peers: HashSet::new(),
-            pieces_received_from_them: Vec::new(),
-            cancels: Vec::new(),
-            they_want: Vec::new(),
+            pieces_they_have: vec![],
             piece_tracker: PieceTracker::new(info),
             piece_requests_sent: 0,
             piece_requests: Vec::new(),
@@ -71,17 +65,17 @@ impl PeerState {
     }
 
     pub fn change(&mut self, change: PeerChange) {
+        if let Some(bitfield) = change.bitfield {
+            // TODO check the bounds
+            self.they_have = bitfield;
+        }
+
         if let Some(them_choking) = change.choking {
             self.them_choking = them_choking;
         }
 
         if let Some(them_interested) = change.interested {
             self.them_interested = them_interested;
-        }
-
-        if let Some(bitfield) = change.bitfield {
-            // TODO check the bounds
-            self.we_have = bitfield;
         }
 
         for piece_index in change.pieces_received_from_other_peers.into_iter() {
@@ -96,6 +90,10 @@ impl PeerState {
 
         for piece_index in change.pieces_requested {
             self.piece_requests.push(piece_index);
+        }
+
+        for piece_index in change.pieces_they_have {
+            self.pieces_they_have.push(piece_index);
         }
     }
 
@@ -184,9 +182,7 @@ impl PeerState {
             });
         });
 
-        for piece_index in self.pieces_received_from_them.drain(..) {
-            peer_control.push(PeerControl::HavePiece { index: piece_index });
-        }
+        // TODO something about pieces received from them
 
         // get next piece requests to them
         let piece_requests = self
@@ -223,8 +219,8 @@ pub struct PeerChange {
     pub bitfield: Option<BitVec<u8, Msb0>>,
     pub pieces_received_from_other_peers: HashSet<u32>,
     pub pieces_received_from_them: Vec<Piece>,
+    pub pieces_they_have: Vec<u32>,
     pub pieces_requested: Vec<PieceRequest>,
-    pub pieces_have: Vec<u32>,
 }
 
 impl PeerChange {
@@ -234,7 +230,7 @@ impl PeerChange {
             BittorrentMessage::Unchoke => self.choking = Some(false),
             BittorrentMessage::Interested => self.interested = Some(true),
             BittorrentMessage::NotInterested => self.interested = Some(false),
-            BittorrentMessage::Have { piece_index } => self.pieces_have.push(piece_index),
+            BittorrentMessage::Have { piece_index } => self.pieces_they_have.push(piece_index),
             BittorrentMessage::Bitfield { bitfield } => {
                 self.bitfield = Some(BitVec::from_vec(bitfield))
             }
@@ -268,4 +264,127 @@ pub struct PeerCommand {
     pub peer_control_global: Vec<PeerControlGlobal>,
     pub complete_pieces: Vec<CompletePiece>,
     pub piece_requests_to_us: Vec<RequestPiece>,
+}
+
+#[cfg(test)]
+mod test {
+    use bitvec::{order::Msb0, vec::BitVec};
+
+    use crate::{
+        bencoding::Position,
+        metadata::{Info, ModeFile, Piece, PieceRequest},
+        peer::BittorrentMessage,
+        peer_state::{PeerChange, PeerState},
+    };
+
+    fn info() -> Info {
+        Info {
+            pieces_length: 10,
+            pieces: vec![vec![0].into_iter().cycle().take(20).collect()],
+            file_info: ModeFile::Single { length: 10 },
+            name: String::from("test.txt").into_bytes(),
+            position: Position {
+                offset: 0,
+                length: 10,
+            },
+        }
+    }
+
+    #[test]
+    pub fn test_peer_change_choke() {
+        let mut peer_state =
+            PeerState::new(info(), ("10.0.0.1".parse().unwrap(), 1234), BitVec::new());
+        let mut peer_change: PeerChange = Default::default();
+
+        peer_change.handle_message(BittorrentMessage::Choke);
+        peer_state.change(peer_change);
+
+        assert!(peer_state.them_choking);
+    }
+
+    #[test]
+    pub fn test_peer_change_unchoke() {
+        let mut peer_state =
+            PeerState::new(info(), ("10.0.0.1".parse().unwrap(), 1234), BitVec::new());
+        let mut peer_change: PeerChange = Default::default();
+
+        peer_change.handle_message(BittorrentMessage::Unchoke);
+        peer_state.change(peer_change);
+
+        assert!(!peer_state.them_choking);
+    }
+
+    #[test]
+    pub fn test_peer_change_interested() {
+        let mut peer_state =
+            PeerState::new(info(), ("10.0.0.1".parse().unwrap(), 1234), BitVec::new());
+        let mut peer_change: PeerChange = Default::default();
+
+        peer_change.handle_message(BittorrentMessage::Interested);
+        peer_state.change(peer_change);
+
+        assert!(peer_state.them_interested);
+    }
+
+    #[test]
+    pub fn test_peer_change_not_interested() {
+        let mut peer_state =
+            PeerState::new(info(), ("10.0.0.1".parse().unwrap(), 1234), BitVec::new());
+        let mut peer_change: PeerChange = Default::default();
+
+        peer_change.handle_message(BittorrentMessage::NotInterested);
+        peer_state.change(peer_change);
+
+        assert!(!peer_state.them_interested);
+    }
+
+    #[test]
+    pub fn test_peer_change_have_piece() {
+        let mut peer_state =
+            PeerState::new(info(), ("10.0.0.1".parse().unwrap(), 1234), BitVec::new());
+        let mut peer_change: PeerChange = Default::default();
+
+        peer_change.handle_message(BittorrentMessage::Have { piece_index: 0 });
+        peer_state.change(peer_change);
+
+        assert_eq!(peer_state.pieces_they_have, vec![0])
+    }
+
+    #[test]
+    pub fn test_peer_change_bitfield() {
+        let mut peer_state =
+            PeerState::new(info(), ("10.0.0.1".parse().unwrap(), 1234), BitVec::new());
+        let mut peer_change: PeerChange = Default::default();
+        let bitvec: BitVec<u8, Msb0> = BitVec::repeat(true, 8);
+
+        peer_change.handle_message(BittorrentMessage::Bitfield {
+            bitfield: vec![0b11111111],
+        });
+        peer_state.change(peer_change);
+
+        assert_eq!(peer_state.they_have.into_vec(), bitvec.into_vec());
+    }
+
+    #[test]
+    pub fn test_peer_request_piece() {
+        let mut peer_state =
+            PeerState::new(info(), ("10.0.0.1".parse().unwrap(), 1234), BitVec::new());
+        let mut peer_change: PeerChange = Default::default();
+
+        peer_change.handle_message(BittorrentMessage::Request {
+            index: 0,
+            begin: 0,
+            length: 10,
+        });
+        peer_state.change(peer_change);
+
+        assert_eq!(
+            peer_state.piece_requests,
+            vec![PieceRequest {
+                index: 0,
+                begin: 0,
+                length: 10
+            }]
+        );
+    }
 }

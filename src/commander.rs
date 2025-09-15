@@ -5,7 +5,7 @@ use bitvec::{order::Msb0, vec::BitVec};
 
 use crate::{
     coordinator::{Coordinator, PeerControlGlobal},
-    filer::{Filer, RequestPiece},
+    filer::RequestPiece,
     metadata::{CompletePiece, Info},
     peer::PeerControlEnvelope,
     peer_state::{PeerChange, PeerState},
@@ -14,20 +14,14 @@ use crate::{
 pub struct Commander {
     coordinator_addr: Addr<Coordinator>,
     we_have: BitVec<u8, Msb0>,
-    filer_addr: Addr<Filer>,
     peers: HashMap<(Ipv4Addr, u16), PeerState>,
     info: Info,
 }
 
 impl Commander {
-    pub fn new(
-        info: Info,
-        coordinator_addr: Addr<Coordinator>,
-        filer_addr: Addr<Filer>,
-    ) -> Commander {
+    pub fn new(info: Info, coordinator_addr: Addr<Coordinator>) -> Commander {
         Commander {
             coordinator_addr,
-            filer_addr,
             peers: HashMap::new(),
             we_have: BitVec::repeat(false, info.num_pieces()),
             info,
@@ -50,7 +44,6 @@ pub struct CommanderMsgEnvelope {
 pub enum CommanderMsg {
     AddPeer,
     RemovePeer,
-    SetPieceAssignment { piece_indexes: Vec<u32> },
     PeerChange { peer_change: PeerChange },
 }
 
@@ -107,9 +100,6 @@ impl Handler<CommanderMsgEnvelope> for Commander {
             match msg {
                 CommanderMsg::PeerChange { peer_change } => {
                     peer_state.change(peer_change);
-                }
-                CommanderMsg::SetPieceAssignment { piece_indexes } => {
-                    peer_state.set_piece_assignment(piece_indexes);
                 }
                 _ => (),
             }
