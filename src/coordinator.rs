@@ -242,7 +242,7 @@ impl Handler<PeerDisconnect> for Coordinator {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum PeerControlGlobal {
     HavePiece { piece_index: u32 },
 }

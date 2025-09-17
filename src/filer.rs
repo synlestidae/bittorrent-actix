@@ -74,7 +74,7 @@ pub struct RequestPieceEnvelope {
     pub request_pieces: Vec<RequestPiece>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct RequestPiece {
     pub ip_address: Ipv4Addr,
     pub port: u16,

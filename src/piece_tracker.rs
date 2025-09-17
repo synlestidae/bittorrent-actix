@@ -4,6 +4,8 @@ use std::{
     sync::Arc,
 };
 
+use ureq::trace;
+
 use crate::metadata::{CompletePiece, Info, Piece, PieceRequest};
 
 #[derive(Debug)]
@@ -172,8 +174,6 @@ struct PieceIterator<'a> {
     request_size: u32,
     /// Piece that we analysing now
     piece_vec_index: usize,
-    /// Of the piece we analysing now, the offset within that piece
-    offset_index: u32,
 }
 
 impl<'a> PieceIterator<'a> {
@@ -191,7 +191,6 @@ impl<'a> PieceIterator<'a> {
             complete_pieces,
             info,
             request_size,
-            offset_index: 0,
             piece_vec_index: 0,
         }
     }
@@ -290,14 +289,11 @@ impl<'a> Iterator for PieceIterator<'a> {
         // Create the first and yield it
         for piece_index in self.assigned_pieces.iter() {
             if !pieces.iter().any(|p| p.index == *piece_index) {
-                let begin = self.offset_index;
                 let length = min(self.info.piece_length(*piece_index), self.request_size);
-
-                self.offset_index += length;
 
                 let piece_request = PieceRequest {
                     index: *piece_index,
-                    begin,
+                    begin: 0,
                     length,
                 };
                 self.new_pieces.push(piece_request.clone());

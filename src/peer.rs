@@ -358,12 +358,9 @@ pub struct PeerControlEnvelope {
     pub messages: Vec<PeerControl>,
 }
 
-#[derive(Message, Debug)]
+#[derive(Message, Debug, PartialEq, Eq)]
 #[rtype(result = "Result<(), PeerError>")]
 pub enum PeerControl {
-    AssignPieces {
-        assigned_pieces: Vec<u32>,
-    },
     ChokeThem,
     UnchokeThem,
     Interested,
@@ -380,7 +377,7 @@ pub enum PeerControl {
         index: u32,
     },
     Bitfield {
-        bitfield: BitVec<u8, Msb0>,
+        bitfield: Vec<u8>,
     },
 }
 
@@ -389,15 +386,6 @@ impl Handler<PeerControl> for Peer {
 
     fn handle(&mut self, msg: PeerControl, _ctx: &mut Context<Self>) -> Self::Result {
         match msg {
-            PeerControl::AssignPieces { assigned_pieces } => {
-                debug!(
-                    "Assigned {} piece(s) to {}:{}",
-                    assigned_pieces.len(),
-                    self.ip_address,
-                    self.port,
-                );
-                self.assigned_pieces = assigned_pieces;
-            }
             PeerControl::ChokeThem => {
                 debug!("Sending Choke to {}:{}", self.ip_address, self.port);
                 self.writer.write(BittorrentMessage::Choke);
@@ -440,9 +428,8 @@ impl Handler<PeerControl> for Peer {
                     .write(BittorrentMessage::Have { piece_index: index });
             }
             PeerControl::Bitfield { bitfield } => {
-                self.writer.write(BittorrentMessage::Bitfield {
-                    bitfield: bitfield.into_vec(),
-                });
+                self.writer
+                    .write(BittorrentMessage::Bitfield { bitfield: bitfield });
             }
         }
 
