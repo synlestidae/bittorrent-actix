@@ -460,28 +460,31 @@ mod test {
             first_command,
             PeerCommand {
                 peer_control: vec![
-                    PeerControl::Bitfield { bitfield: vec![0x00] },
+                    PeerControl::Bitfield {
+                        bitfield: vec![0x00]
+                    },
                     PeerControl::UnchokeThem,
                     PeerControl::Interested,
                     PeerControl::RequestPieces {
-                    piece_requests: vec![
-                        PieceRequest {
-                            index: 0,
-                            begin: 0,
-                            length: 10,
-                        },
-                        PieceRequest {
-                            index: 1,
-                            begin: 0,
-                            length: 10,
-                        },
-                        PieceRequest {
-                            index: 2,
-                            begin: 0,
-                            length: 10,
-                        },
-                    ],
-                }],
+                        piece_requests: vec![
+                            PieceRequest {
+                                index: 0,
+                                begin: 0,
+                                length: 10,
+                            },
+                            PieceRequest {
+                                index: 1,
+                                begin: 0,
+                                length: 10,
+                            },
+                            PieceRequest {
+                                index: 2,
+                                begin: 0,
+                                length: 10,
+                            },
+                        ],
+                    }
+                ],
                 ..Default::default()
             }
         );
