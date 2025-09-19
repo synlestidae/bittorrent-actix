@@ -4,6 +4,7 @@ use std::{
     sync::Arc,
 };
 
+use log::trace;
 use ureq::trace;
 
 use crate::metadata::{CompletePiece, Info, Piece, PieceRequest};
@@ -118,10 +119,10 @@ impl PieceTracker {
     }
 
     pub fn next_pieces(&mut self, assigned_piece_indexes: &[u32], max: usize) -> Vec<PieceRequest> {
-        let max_next = max as isize - self.requested_pieces.len() as isize;
-        if max_next <= 0 {
+        if self.requested_pieces.len() >= max {
             return vec![];
         }
+        let max_next = max - self.requested_pieces.len();
 
         let pieces = self
             .pieces
@@ -132,7 +133,7 @@ impl PieceTracker {
                 begin: p.begin,
                 length: p.block.len() as u32,
             })
-            .chain(self.requested_pieces.iter().cloned())
+            .chain(self.requested_pieces.iter().cloned()) // so don't re-request piece
             .collect();
 
         let piece_iterator = PieceIterator::new(
@@ -172,8 +173,6 @@ struct PieceIterator<'a> {
     complete_pieces: &'a HashSet<u32>,
     info: &'a Info,
     request_size: u32,
-    /// Piece that we analysing now
-    piece_vec_index: usize,
 }
 
 impl<'a> PieceIterator<'a> {
@@ -191,8 +190,82 @@ impl<'a> PieceIterator<'a> {
             complete_pieces,
             info,
             request_size,
-            piece_vec_index: 0,
         }
+    }
+}
+
+impl<'a> PieceIterator<'a> {
+    pub fn piece_next(&'a self, index: u32, pieces: &Vec<PieceRequest>) -> Option<PieceRequest> {
+        let total_length = self.info.piece_length(index);
+
+        // First check if we need to seed the first piece
+        if pieces.len() == 0 {
+            let length = {
+                if self.request_size < total_length {
+                    self.request_size
+                } else {
+                    total_length
+                }
+            };
+
+            trace!("Seeding piece {}", index);
+
+            return Some(PieceRequest {
+                index,
+                begin: 0,
+                length,
+            });
+        }
+
+        // Then check if need to fill gap between piece requests
+        for i in 0..pieces.len() - 1 {
+            let this_piece = &pieces[i];
+            let next_piece = &pieces[i + 1];
+
+            if this_piece.begin + this_piece.length < next_piece.begin {
+                let length = {
+                    if this_piece.begin + self.request_size < next_piece.begin {
+                        self.request_size
+                    } else {
+                        next_piece.begin - (this_piece.begin + this_piece.length)
+                    }
+                };
+
+                let piece_request = PieceRequest {
+                    index: this_piece.index,
+                    begin: this_piece.begin + this_piece.length,
+                    length,
+                };
+
+                trace!("Filling gap with {:?}", piece_request);
+
+                return Some(piece_request);
+            }
+        }
+
+        // Reached end of piece requests
+        let final_piece = &pieces[pieces.len() - 1];
+        if final_piece.begin + final_piece.length < total_length {
+            let length = {
+                if final_piece.begin + self.request_size < total_length {
+                    self.request_size
+                } else {
+                    total_length - (final_piece.begin + final_piece.length)
+                }
+            };
+
+            let piece_request = PieceRequest {
+                index: final_piece.index,
+                begin: final_piece.begin + final_piece.length,
+                length,
+            };
+
+            trace!("Adding end piece {:?}", piece_request);
+
+            return Some(piece_request);
+        }
+
+        None
     }
 }
 
@@ -200,108 +273,64 @@ impl<'a> Iterator for PieceIterator<'a> {
     type Item = PieceRequest;
 
     fn next(&mut self) -> Option<Self::Item> {
-        // To analyse gaps, pieces need to be in order
-        // Note that biggest pieces go first
-        let mut pieces: Vec<_> = self
+        let mut piece_indexes: Vec<u32> = self
+            .pieces
+            .iter()
+            .map(|p| p.index)
+            .chain(self.new_pieces.iter().map(|p| p.index))
+            .collect();
+        piece_indexes.sort();
+        piece_indexes.dedup();
+
+        trace!("Looking at filling piece indexes: {:?}", piece_indexes);
+
+        let everything: Vec<PieceRequest> = self
             .pieces
             .iter()
             .cloned()
             .chain(self.new_pieces.iter().cloned())
-            .filter(|p| !self.complete_pieces.contains(&p.index))
             .collect();
-        pieces.sort_by_key(|p| (p.index, p.begin, u32::MAX - p.length));
 
-        while self.piece_vec_index + 1 < pieces.len() {
-            // We are not at end of pieces
-            // We may need to fill a gap
-            let piece = &pieces[self.piece_vec_index];
-            let next_piece = &pieces[self.piece_vec_index + 1];
-
-            if piece.index == next_piece.index && piece.begin + piece.length < next_piece.begin {
-                let begin = piece.begin + piece.length;
-                let length = {
-                    if begin + self.request_size > next_piece.begin {
-                        next_piece.begin - begin
-                    } else {
-                        self.request_size
-                    }
-                };
-                let piece_request = PieceRequest {
-                    index: piece.index,
-                    begin,
-                    length,
-                };
-
-                self.new_pieces.push(piece_request.clone());
-                return Some(piece_request);
-            } else if piece.index != next_piece.index
-                && piece.begin + piece.length < self.info.piece_length(piece.index)
-            {
-                let begin = piece.begin + piece.length;
-                let length = {
-                    if begin + self.request_size > self.info.piece_length(piece.index) {
-                        self.info.piece_length(piece.index) - begin
-                    } else {
-                        self.request_size
-                    }
-                };
-                let piece_request = PieceRequest {
-                    index: piece.index,
-                    begin,
-                    length,
-                };
-
-                self.new_pieces.push(piece_request.clone());
-                return Some(piece_request);
+        // We are looking at a combination of pieces
+        // Everything = pieces we have + pieces we already requested + pieces we're about to request
+        for index in piece_indexes.iter() {
+            if self.complete_pieces.contains(&index) {
+                trace!("Already have piece {}", index);
+                continue;
             }
 
-            self.piece_vec_index += 1;
-        }
-
-        if self.piece_vec_index + 1 == pieces.len() {
-            let piece = &pieces[self.piece_vec_index];
-            let piece_end = piece.begin + piece.length;
-            let new_begin = piece_end;
-
-            if piece_end < self.info.piece_length(piece.index) {
-                // Last piece needs filling
-                let new_length = {
-                    if new_begin + self.request_size > self.info.piece_length(piece.index) {
-                        self.info.piece_length(piece.index) - new_begin
-                    } else {
-                        self.request_size
-                    }
-                };
-
-                let piece_request = PieceRequest {
-                    index: piece.index,
-                    begin: new_begin,
-                    length: new_length,
-                };
-                self.new_pieces.push(piece_request.clone());
-                return Some(piece_request);
+            if let Some(next_request) = self.piece_next(*index, &everything) {
+                self.new_pieces.push(next_request.clone());
+                return Some(next_request);
             }
         }
 
-        // All existing pieces have their gaps filled
-        // We can start on the assigned pieces now
-        // First find one that we haven't seen yet
-        // Create the first and yield it
-        for piece_index in self.assigned_pieces.iter() {
-            if !pieces.iter().any(|p| p.index == *piece_index) {
-                let length = min(self.info.piece_length(*piece_index), self.request_size);
-
-                let piece_request = PieceRequest {
-                    index: *piece_index,
-                    begin: 0,
-                    length,
-                };
-                self.new_pieces.push(piece_request.clone());
-                return Some(piece_request);
-            }
+        // If we didn't find a piece to fill, look at the assigned pieces and add the first piece
+        // It will get filled, if necessary, on next iteration
+        let assignable_pieces = self
+            .assigned_pieces
+            .iter()
+            .filter(|i| !piece_indexes.contains(i));
+        for seed_piece_index in assignable_pieces.into_iter() {
+            let length = {
+                if self.request_size < self.info.piece_length(*seed_piece_index) {
+                    self.request_size
+                } else {
+                    self.info.piece_length(*seed_piece_index)
+                }
+            };
+            let piece_request = PieceRequest {
+                index: *seed_piece_index,
+                begin: 0,
+                length,
+            };
+            trace!("Seeding piece from assignment: {:?}", piece_request);
+            self.new_pieces.push(piece_request.clone());
+            return Some(piece_request);
         }
 
-        // No more pieces to do
+        trace!("No more piece requests to make");
+
         None
     }
 }

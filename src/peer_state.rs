@@ -432,7 +432,7 @@ mod test {
     }
 
     #[test]
-    pub fn test_peer_change_request_second_and_third_piece() {
+    pub fn test_peer_change_request_first_second_and_third_piece() {
         let mut peer_state = PeerState::new(
             info(3),
             ("10.0.0.1".parse().unwrap(), 1234),
@@ -447,7 +447,7 @@ mod test {
 
         peer_state.change(first_peer_change);
 
-        let _first_command = peer_state.peer_command();
+        let first_command = peer_state.peer_command();
         let mut second_peer_change: PeerChange = Default::default();
         second_peer_change.handle_message(BittorrentMessage::Piece {
             index: 0,
@@ -455,19 +455,21 @@ mod test {
             block: vec![0].into_iter().cycle().take(10).collect(),
         });
         peer_state.change(second_peer_change);
-        let second_command = peer_state.peer_command();
-
-        let mut digest = Sha1::new();
-        digest.update(vec![
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        ]);
 
         assert_eq!(
-            second_command,
+            first_command,
             PeerCommand {
-                peer_control: vec![PeerControl::RequestPieces {
+                peer_control: vec![
+                    PeerControl::Bitfield { bitfield: vec![0x00] },
+                    PeerControl::UnchokeThem,
+                    PeerControl::Interested,
+                    PeerControl::RequestPieces {
                     piece_requests: vec![
+                        PieceRequest {
+                            index: 0,
+                            begin: 0,
+                            length: 10,
+                        },
                         PieceRequest {
                             index: 1,
                             begin: 0,
