@@ -98,6 +98,7 @@ impl Handler<RecvMessage> for Peer {
         let mut command_set: CommandSet = Default::default();
 
         for msg in msg.msgs.into_iter() {
+            trace!("Received message {:?}", msg);
             peer_change.handle_message(msg)
         }
 
@@ -548,6 +549,10 @@ impl StreamHandler<Result<Vec<BittorrentMessage>, PeerError>> for Peer {
 
 impl Actor for Peer {
     type Context = Context<Self>;
+
+    fn started(&mut self, ctx: &mut Self::Context) {
+        ctx.set_mailbox_capacity(100);
+    }
 
     fn stopped(&mut self, _ctx: &mut Self::Context) {
         debug!("Disconnecting from peer {}:{}", self.ip_address, self.port);

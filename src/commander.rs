@@ -68,6 +68,7 @@ impl Handler<CommanderMsgEnvelope> for Commander {
     type Result = ();
 
     fn handle(&mut self, envelope: CommanderMsgEnvelope, ctx: &mut Self::Context) -> Self::Result {
+        ctx.set_mailbox_capacity(self.peers.len() * 10 + 5);
         for msg in envelope.msgs.iter() {
             match (
                 msg,
@@ -106,16 +107,21 @@ impl Handler<CommanderMsgEnvelope> for Commander {
         }
 
         let peer_command = peer_state.peer_command();
-        self.coordinator_addr.do_send(CommandSet {
-            peer_control: vec![PeerControlEnvelope {
-                ip_address: peer_state.ip_address,
-                port: peer_state.port,
-                messages: peer_command.peer_control,
-            }],
-            peer_control_global: peer_command.peer_control_global,
-            complete_pieces: peer_command.complete_pieces,
-            piece_requests_to_us: peer_command.piece_requests_to_us,
-            peer_change: vec![],
-        });
+
+        ctx.spawn(
+            self.coordinator_addr
+                .send(CommandSet {
+                    peer_control: vec![PeerControlEnvelope {
+                        ip_address: peer_state.ip_address,
+                        port: peer_state.port,
+                        messages: peer_command.peer_control,
+                    }],
+                    peer_control_global: peer_command.peer_control_global,
+                    complete_pieces: peer_command.complete_pieces,
+                    piece_requests_to_us: peer_command.piece_requests_to_us,
+                    peer_change: vec![],
+                })
+                .into_actor(self).map(|_,_,_| {}),
+        );
     }
 }

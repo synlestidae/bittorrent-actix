@@ -274,6 +274,8 @@ pub struct PeerCommand {
 
 #[cfg(test)]
 mod test {
+    use std::sync::Arc;
+
     use bitvec::{order::Msb0, vec::BitVec};
     use ctor::ctor;
     use env_logger::init as init_env_logger;
@@ -281,7 +283,8 @@ mod test {
 
     use crate::{
         bencoding::Position,
-        metadata::{Info, ModeFile, PieceRequest},
+        coordinator::PeerControlGlobal,
+        metadata::{CompletePiece, Info, ModeFile, PieceRequest},
         peer::{BittorrentMessage, PeerControl},
         peer_state::{PeerChange, PeerCommand, PeerState},
     };
@@ -447,7 +450,6 @@ mod test {
 
         peer_state.change(first_peer_change);
 
-        let first_command = peer_state.peer_command();
         let mut second_peer_change: PeerChange = Default::default();
         second_peer_change.handle_message(BittorrentMessage::Piece {
             index: 0,
@@ -455,6 +457,7 @@ mod test {
             block: vec![0].into_iter().cycle().take(10).collect(),
         });
         peer_state.change(second_peer_change);
+        let first_command = peer_state.peer_command();
 
         assert_eq!(
             first_command,
@@ -465,13 +468,9 @@ mod test {
                     },
                     PeerControl::UnchokeThem,
                     PeerControl::Interested,
+                    PeerControl::HavePiece { index: 0 },
                     PeerControl::RequestPieces {
                         piece_requests: vec![
-                            PieceRequest {
-                                index: 0,
-                                begin: 0,
-                                length: 10,
-                            },
                             PieceRequest {
                                 index: 1,
                                 begin: 0,
@@ -485,7 +484,12 @@ mod test {
                         ],
                     }
                 ],
-                ..Default::default()
+                complete_pieces: vec![CompletePiece {
+                    index: 0,
+                    data: Arc::from(vec![0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
+                }],
+                peer_control_global: vec![PeerControlGlobal::HavePiece { piece_index: 0 }],
+                piece_requests_to_us: vec![]
             }
         );
     }

@@ -165,15 +165,16 @@ impl Handler<NewPeer> for Coordinator {
 impl Handler<CommandSet> for Coordinator {
     type Result = ();
 
-    fn handle(&mut self, msg: CommandSet, _ctx: &mut Context<Self>) -> Self::Result {
+    fn handle(&mut self, msg: CommandSet, ctx: &mut Context<Self>) -> Self::Result {
+        ctx.set_mailbox_capacity(self.peer_addrs.len() * 10 + 5);
         for peer_control in msg.peer_control.into_iter() {
             if let Some(peer_addr) = self
                 .peer_addrs
                 .get(&(peer_control.ip_address, peer_control.port))
             {
                 for message in peer_control.messages {
-                    trace!("Sending {:?}", message);
-                    peer_addr.do_send(message);
+                    trace!("Sending peer control {:?}", message);
+                    peer_addr.try_send(message).unwrap();
                 }
             }
         }

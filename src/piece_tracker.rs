@@ -222,7 +222,10 @@ impl<'a> PieceIterator<'a> {
             let this_piece = &pieces[i];
             let next_piece = &pieces[i + 1];
 
-            if this_piece.begin + this_piece.length < next_piece.begin {
+            if this_piece.index == next_piece.index
+                && this_piece.begin + this_piece.length < next_piece.begin
+            {
+                trace!("Looking at gap {:?} {:?}", this_piece, next_piece);
                 let length = {
                     if this_piece.begin + self.request_size < next_piece.begin {
                         self.request_size
@@ -310,7 +313,7 @@ impl<'a> Iterator for PieceIterator<'a> {
         let assignable_pieces = self
             .assigned_pieces
             .iter()
-            .filter(|i| !piece_indexes.contains(i));
+            .filter(|i| !piece_indexes.contains(i) && !self.complete_pieces.contains(i));
         for seed_piece_index in assignable_pieces.into_iter() {
             let length = {
                 if self.request_size < self.info.piece_length(*seed_piece_index) {
