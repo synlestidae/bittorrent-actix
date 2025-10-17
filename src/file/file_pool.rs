@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use log::debug;
 use tokio::fs::File;
 use tokio::io::Error;
 
@@ -17,10 +18,12 @@ const MAX_READERS: usize = 10;
 
 impl FilePool {
     pub async fn open(path: &str) -> Result<Self, Error> {
+        debug!("Opening {}", path);
         let writer = File::options()
             .read(false)
-            .write(false)
+            .write(true)
             .append(true)
+            .create(true)
             .open(path)
             .await?;
 

@@ -41,8 +41,6 @@ pub enum FilerEvent {
 #[derive(Message)]
 #[rtype(result = "Result<(), io::Error>")]
 pub struct WholePiece {
-    pub ip_address: Ipv4Addr,
-    pub port: u16,
     pub index: u32,
     pub data: Vec<u8>,
 }

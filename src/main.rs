@@ -31,6 +31,7 @@ use crate::metadata::Metadata;
 
 #[actix::main(worker_threads = 50, max_blocking_threads = 50)]
 async fn main() {
+    println!("Starting up");
     init();
 
     let args = args();

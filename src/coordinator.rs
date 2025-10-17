@@ -10,7 +10,7 @@ use tokio::net::TcpStream;
 use tokio::time::timeout;
 
 use crate::commander::{CommandSet, Commander, CommanderMsg, CommanderMsgEnvelope};
-use crate::filer::{Filer, FilerEvent, RequestPieceEnvelope};
+use crate::filer::{Filer, FilerEvent, RequestPieceEnvelope, WholePiece};
 use crate::metadata::Info;
 use crate::peer::{Peer, PeerControl, PeerControlEnvelope, PeerError};
 use crate::peer_state::PeerChange;
@@ -239,11 +239,21 @@ impl Handler<CommandSet> for Coordinator {
             );
         }
 
-        let mut filer_futures = Vec::new();
+        let mut filer_request_futures = Vec::new();
         if !msg.piece_requests_to_us.is_empty() {
-            filer_futures.push(self.filer_addr.send(RequestPieceEnvelope {
+            filer_request_futures.push(self.filer_addr.send(RequestPieceEnvelope {
                 request_pieces: msg.piece_requests_to_us,
             }));
+        }
+
+        let mut filer_whole_piece_futures = Vec::new();
+        if !msg.complete_pieces.is_empty() {
+            for complete_piece in msg.complete_pieces {
+                filer_whole_piece_futures.push(self.filer_addr.send(WholePiece {
+                    index: complete_piece.index,
+                    data: complete_piece.data.to_vec(),
+                }));
+            }
         }
 
         return Box::pin(
@@ -260,11 +270,20 @@ impl Handler<CommandSet> for Coordinator {
                     }
                 }
 
-                for filer_fut in filer_futures {
+                for filer_fut in filer_request_futures {
                     match filer_fut.await {
-                        Ok(_command_set) => {
-                            todo!("Massive hassle");
+                        Ok(_command_set) => (), 
+                        Err(err) => {
+                            error!("Error between coordinator and filer: {}", err);
                         }
+                    }
+                }
+
+                for filer_fut in filer_whole_piece_futures {
+                    match filer_fut.await {
+                        Ok(_) => {
+                            // TODO need to send the Have message where necessary?
+                        }, 
                         Err(err) => {
                             error!("Error between coordinator and filer: {}", err);
                         }
