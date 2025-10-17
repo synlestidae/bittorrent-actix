@@ -1,6 +1,4 @@
 use crate::bencoding::Bencoding;
-use crate::coordinator::{Coordinator, TrackerUpdate};
-use crate::filer::Filer;
 use crate::metadata::Metadata;
 use actix::prelude::*;
 use log::{debug, error};
@@ -15,23 +13,14 @@ use ureq::http::StatusCode;
 
 pub struct Tracker {
     metadata: Metadata,
-    coordinator: Addr<Coordinator>,
-    filer: Addr<Filer>,
     info_hash: [u8; 20],
     peer_id: Option<[u8; 20]>,
 }
 
 impl Tracker {
-    pub fn new(
-        metadata: Metadata,
-        coordinator: Addr<Coordinator>,
-        filer: Addr<Filer>,
-        info_hash: [u8; 20],
-    ) -> Self {
+    pub fn new(metadata: Metadata, info_hash: [u8; 20]) -> Self {
         Self {
             metadata,
-            coordinator,
-            filer,
             info_hash,
             peer_id: None,
         }
@@ -43,7 +32,7 @@ impl Actor for Tracker {
 }
 
 #[derive(Message)]
-#[rtype(result = "Result<(), TrackerError>")]
+#[rtype(result = "Result<TrackerResponse, TrackerError>")]
 pub struct AskTracker {}
 
 pub enum TrackerError {
@@ -70,7 +59,7 @@ impl From<ureq::Error> for TrackerError {
 }
 
 impl Handler<AskTracker> for Tracker {
-    type Result = Result<(), TrackerError>;
+    type Result = Result<TrackerResponse, TrackerError>;
 
     fn handle(&mut self, _msg: AskTracker, ctx: &mut Context<Self>) -> Self::Result {
         // Build the URL for GET request
@@ -118,14 +107,7 @@ impl Handler<AskTracker> for Tracker {
         let tracker_response = parse_tracker_response(bencoding)?;
         debug!("Tracker response: {:?}", tracker_response);
 
-        self.coordinator.do_send(TrackerUpdate { tracker_response });
-
-        //let tracker_response = parse_tracker_response(bencoding);
-
-        // add new peers to dictionary
-        // initialise actors for them
-        // init the peers if we don't have enough
-        Ok(())
+        Ok(tracker_response)
     }
 }
 

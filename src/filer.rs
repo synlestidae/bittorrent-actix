@@ -1,27 +1,29 @@
+use std::net::Ipv4Addr;
+
 use actix::prelude::*;
 use log::debug;
-
-use std::net::Ipv4Addr;
-use std::{collections::BTreeMap, sync::Arc};
+use tokio::io;
 
 use crate::commander::CommandSet;
-use crate::coordinator::PeerControlGlobal;
+use crate::metadata::Info;
 use crate::peer::{PeerControl, PeerControlEnvelope};
-use crate::{coordinator::Coordinator, metadata::Info};
+use crate::piece_file::PieceFile;
 
 pub struct Filer {
     info: Info,
-    pieces: BTreeMap<u32, Arc<[u8]>>,
-    coordinator_addr: Addr<Coordinator>,
+    piece_file: PieceFile,
 }
 
+const MAGIC_NUMBER: &'static [u8; 8] = b"PIECESv1";
+
+const CHANNEL_DEPTH: usize = 100;
+
 impl Filer {
-    pub fn new(info: Info, coordinator_addr: Addr<Coordinator>) -> Self {
-        Self {
-            info,
-            pieces: BTreeMap::new(),
-            coordinator_addr,
-        }
+    pub async fn new(info: Info) -> Result<Self, io::Error> {
+        let filename = info.filename();
+        let piece_file = PieceFile::open(&filename).await?;
+
+        Ok(Self { info, piece_file })
     }
 }
 
@@ -37,39 +39,34 @@ pub enum FilerEvent {
 }
 
 #[derive(Message)]
-#[rtype(result = "()")]
+#[rtype(result = "Result<(), io::Error>")]
 pub struct WholePiece {
     pub ip_address: Ipv4Addr,
     pub port: u16,
     pub index: u32,
-    pub data: Arc<[u8]>,
+    pub data: Vec<u8>,
 }
 
 impl Handler<WholePiece> for Filer {
-    type Result = ();
+    type Result = ResponseActFuture<Self, Result<(), io::Error>>;
 
     fn handle(&mut self, msg: WholePiece, _ctx: &mut Context<Self>) -> Self::Result {
         debug!("Received WholePiece index={}", msg.index);
+        let mut piece_file = self.piece_file.clone();
 
-        self.pieces.insert(msg.index, msg.data);
+        return Box::pin(
+            async move {
+                piece_file.write(msg.index, msg.data).await?;
 
-        self.coordinator_addr.do_send(CommandSet {
-            peer_control: vec![],
-            peer_control_global: vec![PeerControlGlobal::HavePiece {
-                piece_index: msg.index,
-            }],
-            piece_requests_to_us: vec![],
-            complete_pieces: vec![],
-            peer_change: vec![],
-        });
-
-        // TODO take the piece, arrange it, write it to disk where necessary
-        // this includes creating the directory, files, etc
+                Ok(())
+            }
+            .into_actor(self),
+        );
     }
 }
 
-#[derive(Message, Debug)]
-#[rtype(result = "()")]
+#[derive(Message)]
+#[rtype(result = "Result<CommandSet, io::Error>")]
 pub struct RequestPieceEnvelope {
     pub request_pieces: Vec<RequestPiece>,
 }
@@ -84,41 +81,56 @@ pub struct RequestPiece {
 }
 
 impl Handler<RequestPieceEnvelope> for Filer {
-    type Result = ();
+    type Result = ResponseActFuture<Self, Result<CommandSet, io::Error>>;
 
     fn handle(&mut self, msg: RequestPieceEnvelope, _ctx: &mut Context<Self>) -> Self::Result {
-        debug!("Received {:?}", msg);
-        for request_piece in msg.request_pieces.into_iter() {
-            let piece = match self.pieces.get(&request_piece.index) {
-                Some(p) => p,
-                None => return,
-            };
+        let mut piece_file = self.piece_file.clone();
 
-            let end_index = (request_piece.begin + request_piece.length) as usize;
-            if end_index > piece.len() {
-                // invalid request, ignore
-                return;
+        return Box::pin(
+            async move {
+                let mut command_set = CommandSet::default();
+                for request_piece in msg.request_pieces.into_iter() {
+                    match piece_file
+                        .read(
+                            request_piece.index,
+                            request_piece.begin,
+                            request_piece.length,
+                        )
+                        .await?
+                    {
+                        Some(block) => {
+                            command_set.peer_control.push(PeerControlEnvelope {
+                                ip_address: request_piece.ip_address,
+                                port: request_piece.port,
+                                messages: vec![PeerControl::UploadPieceToThem {
+                                    index: request_piece.index,
+                                    begin: request_piece.begin,
+                                    block,
+                                }],
+                            });
+                        }
+                        None => {}
+                    }
+                }
+
+                Ok(command_set)
             }
-
-            let block = piece[request_piece.begin as usize
-                ..(request_piece.begin + request_piece.length) as usize]
-                .to_vec();
-
-            self.coordinator_addr.do_send(CommandSet {
-                peer_control: vec![PeerControlEnvelope {
-                    ip_address: request_piece.ip_address,
-                    port: request_piece.port,
-                    messages: vec![PeerControl::UploadPieceToThem {
-                        index: request_piece.index,
-                        begin: request_piece.begin,
-                        block,
-                    }],
-                }], // TODO
-                peer_control_global: vec![],
-                piece_requests_to_us: vec![],
-                complete_pieces: vec![],
-                peer_change: vec![],
-            });
-        }
+            .into_actor(self),
+        );
     }
+}
+
+struct ReadPiece {
+    index: u32,
+    offset: u32,
+    length: u32,
+}
+
+struct WritePiece {
+    index: u32,
+    data: Vec<u8>,
+}
+
+struct WritePieceDone {
+    index: u32,
 }

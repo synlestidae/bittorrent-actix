@@ -1,4 +1,8 @@
-use std::{collections::HashSet, net::Ipv4Addr};
+use std::{
+    collections::{HashMap, HashSet},
+    net::Ipv4Addr,
+    ops::Add,
+};
 
 use bitvec::{order::Msb0, vec::BitVec};
 use log::{debug, trace};
@@ -11,7 +15,7 @@ use crate::{
     piece_tracker::PieceTracker,
 };
 
-const MAX_PIECE_REQUESTS: usize = 10;
+const MAX_PIECE_REQUESTS: usize = 20;
 
 pub struct PeerState {
     pub ip_address: Ipv4Addr,
@@ -54,6 +58,13 @@ impl PeerState {
             haves_to_send: Vec::new(),
             changes: Vec::new(),
         }
+    }
+
+    pub fn assign_piece(&mut self, piece_index: u32) {
+        if self.assigned_pieces.contains(&piece_index) {
+            return;
+        }
+        self.assigned_pieces.push(piece_index);
     }
 
     pub fn set_piece_assignment(&mut self, assigned_pieces: Vec<u32>) {
@@ -115,13 +126,9 @@ impl PeerState {
         let mut peer_control_global = Vec::new();
 
         if !self.bitfield_sent {
-            trace!(
-                "Sending bitfield to {}:{} {}",
-                ip_address, port, self.we_have
-            );
-            peer_control.push(PeerControl::Bitfield {
-                bitfield: self.we_have.clone().into_vec(),
-            });
+            let bitfield = self.we_have.clone().into_vec();
+            trace!("Sending bitfield to {}:{} {:?}", ip_address, port, bitfield,);
+            peer_control.push(PeerControl::Bitfield { bitfield });
             self.bitfield_sent = true;
         }
 
@@ -214,6 +221,50 @@ impl PeerState {
             complete_pieces: correct_pieces,
             piece_requests_to_us,
         }
+    }
+
+    pub fn completion_stats(&self) -> CompletionStats {
+        let mut stats = HashMap::new();
+        for piece_index in self.assigned_pieces.iter() {
+            if let Some(ref piece) = self.piece_tracker.get_piece(*piece_index) {
+                let percentage = piece.len() as f32 / self.info.piece_length(*piece_index) as f32;
+                stats.insert((self.ip_address, self.port, *piece_index), percentage);
+            }
+        }
+
+        CompletionStats { stats }
+    }
+}
+
+pub struct CompletionStats {
+    stats: HashMap<(Ipv4Addr, u16, u32), f32>,
+}
+
+impl CompletionStats {
+    pub fn new() -> Self {
+        Self {
+            stats: HashMap::new(),
+        }
+    }
+
+    pub fn above_threshold(&self, threshold: f32) -> HashSet<u32> {
+        self.stats
+            .iter()
+            .filter(|((_, _, _), p)| **p > threshold)
+            .map(|((_, _, i), _)| *i)
+            .collect()
+    }
+}
+
+impl Add for CompletionStats {
+    type Output = CompletionStats;
+
+    fn add(mut self, other: CompletionStats) -> CompletionStats {
+        for (k, v) in other.stats.into_iter() {
+            self.stats.insert(k, v);
+        }
+
+        self
     }
 }
 

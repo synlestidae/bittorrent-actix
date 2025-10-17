@@ -7,21 +7,25 @@ use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::process::exit;
 
 use env_logger::init;
-use log::{debug, info};
+use log::{debug, error, info};
 use sha1::{Digest, Sha1};
 
+mod assigner;
 mod bencoding;
 mod commander;
 mod coordinator;
+mod file;
 mod filer;
 mod init;
 mod metadata;
 mod peer;
 mod peer_state;
+mod piece_file;
 mod piece_tracker;
 mod tracker;
 
 use crate::bencoding::{Bencoding, Position};
+use crate::file::FilePool;
 use crate::init::{Init, InitDownload};
 use crate::metadata::Metadata;
 
@@ -68,11 +72,16 @@ async fn main() {
 
     debug!("Starting system");
 
-    let init = Init::new(metadata, info_hash);
+    let filename = metadata.info.filename();
+    let file_pool = FilePool::open(&filename).await.unwrap();
+    let init = Init::new(metadata, file_pool, info_hash).await;
     let init_addr: Addr<Init> = init.start();
 
     debug!("Sending InitDownload");
-    init_addr.send(InitDownload {}).await;
+    if let Err(err) = init_addr.send(InitDownload {}).await {
+        error!("Initialisation error: {}", err);
+        exit(1)
+    }
 
     pending::<()>().await;
 }

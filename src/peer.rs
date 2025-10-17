@@ -4,8 +4,6 @@ use crate::metadata::PieceRequest;
 use crate::peer_state::PeerChange;
 use actix::io::{FramedWrite, WriteHandler};
 use actix::prelude::*;
-use bitvec::order::Msb0;
-use bitvec::vec::BitVec;
 use log::{debug, error, trace};
 use std::io;
 use std::net::Ipv4Addr;
@@ -20,8 +18,8 @@ pub struct Peer {
     port: u16,
     coordinator_addr: Addr<Coordinator>,
     write_half: Option<OwnedWriteHalf>,
-    assigned_pieces: Vec<u32>,
     writer: FramedWrite<BittorrentMessage, OwnedWriteHalf, BittorrentCodec>,
+    messages: Vec<BittorrentMessage>,
 }
 
 impl Peer {
@@ -49,17 +47,15 @@ impl Peer {
             port,
             coordinator_addr,
             write_half: None,
-            assigned_pieces: vec![],
             writer,
+            messages: Vec::new(),
         }
     }
 }
 
 #[derive(Message)]
-#[rtype(result = "Result<(), PeerError>")]
-pub struct RecvMessage {
-    pub msgs: Vec<BittorrentMessage>,
-}
+#[rtype(result = "()")]
+pub struct RecvMessage {}
 
 #[derive(Message, Debug)]
 #[rtype(result = "Result<(), PeerError>")]
@@ -89,16 +85,15 @@ impl Handler<HavePiece> for Peer {
 }
 
 impl Handler<RecvMessage> for Peer {
-    type Result = Result<(), PeerError>;
+    type Result = ResponseActFuture<Self, ()>;
 
-    fn handle(&mut self, msg: RecvMessage, _ctx: &mut Context<Self>) -> Self::Result {
+    fn handle(&mut self, _: RecvMessage, _ctx: &mut Context<Self>) -> Self::Result {
         let ip_address = self.ip_address;
         let port = self.port;
         let mut peer_change: PeerChange = Default::default();
         let mut command_set: CommandSet = Default::default();
 
-        for msg in msg.msgs.into_iter() {
-            trace!("Received message {:?}", msg);
+        for msg in self.messages.drain(..) {
             peer_change.handle_message(msg)
         }
 
@@ -108,9 +103,16 @@ impl Handler<RecvMessage> for Peer {
             peer_change,
         });
 
-        self.coordinator_addr.do_send(command_set);
-
-        Ok(())
+        Box::pin(
+            self.coordinator_addr
+                .send(command_set)
+                .into_actor(self)
+                .map(|result, _, _| {
+                    if let Err(err) = result {
+                        error!("Error sending command set: {}", err);
+                    }
+                }),
+        )
     }
 }
 
@@ -382,55 +384,58 @@ pub enum PeerControl {
     },
 }
 
-impl Handler<PeerControl> for Peer {
+impl Handler<PeerControlEnvelope> for Peer {
     type Result = Result<(), PeerError>;
 
-    fn handle(&mut self, msg: PeerControl, _ctx: &mut Context<Self>) -> Self::Result {
-        match msg {
-            PeerControl::ChokeThem => {
-                debug!("Sending Choke to {}:{}", self.ip_address, self.port);
-                self.writer.write(BittorrentMessage::Choke);
-            }
-            PeerControl::UnchokeThem => {
-                debug!("Sending Unchoke to {}:{}", self.ip_address, self.port);
-                self.writer.write(BittorrentMessage::Unchoke);
-            }
-            PeerControl::Interested => {
-                debug!("Sending Interested to {}:{}", self.ip_address, self.port);
-                self.writer.write(BittorrentMessage::Interested);
-            }
-            PeerControl::NotInterested => {
-                debug!("Sending NotInterested to {}:{}", self.ip_address, self.port);
-                self.writer.write(BittorrentMessage::NotInterested);
-            }
-            PeerControl::RequestPieces { piece_requests } => {
-                debug!("Sending PieceRequests to {}:{}", self.ip_address, self.port);
-                for piece_request in piece_requests.into_iter() {
-                    self.writer.write(BittorrentMessage::Request {
-                        index: piece_request.index,
-                        begin: piece_request.begin,
-                        length: piece_request.length,
-                    });
+    fn handle(&mut self, envelope: PeerControlEnvelope, _ctx: &mut Context<Self>) -> Self::Result {
+        for msg in envelope.messages.into_iter() {
+            trace!("Received peer control {:?}", msg);
+            match msg {
+                PeerControl::ChokeThem => {
+                    debug!("Sending Choke to {}:{}", self.ip_address, self.port);
+                    self.writer.write(BittorrentMessage::Choke);
                 }
-            }
-            PeerControl::UploadPieceToThem {
-                index,
-                begin,
-                block,
-            } => {
-                self.writer.write(BittorrentMessage::Piece {
+                PeerControl::UnchokeThem => {
+                    debug!("Sending Unchoke to {}:{}", self.ip_address, self.port);
+                    self.writer.write(BittorrentMessage::Unchoke);
+                }
+                PeerControl::Interested => {
+                    debug!("Sending Interested to {}:{}", self.ip_address, self.port);
+                    self.writer.write(BittorrentMessage::Interested);
+                }
+                PeerControl::NotInterested => {
+                    debug!("Sending NotInterested to {}:{}", self.ip_address, self.port);
+                    self.writer.write(BittorrentMessage::NotInterested);
+                }
+                PeerControl::RequestPieces { piece_requests } => {
+                    debug!("Sending PieceRequests to {}:{}", self.ip_address, self.port);
+                    for piece_request in piece_requests.into_iter() {
+                        self.writer.write(BittorrentMessage::Request {
+                            index: piece_request.index,
+                            begin: piece_request.begin,
+                            length: piece_request.length,
+                        });
+                    }
+                }
+                PeerControl::UploadPieceToThem {
                     index,
                     begin,
                     block,
-                });
-            }
-            PeerControl::HavePiece { index } => {
-                self.writer
-                    .write(BittorrentMessage::Have { piece_index: index });
-            }
-            PeerControl::Bitfield { bitfield } => {
-                self.writer
-                    .write(BittorrentMessage::Bitfield { bitfield: bitfield });
+                } => {
+                    self.writer.write(BittorrentMessage::Piece {
+                        index,
+                        begin,
+                        block,
+                    });
+                }
+                PeerControl::HavePiece { index } => {
+                    self.writer
+                        .write(BittorrentMessage::Have { piece_index: index });
+                }
+                PeerControl::Bitfield { bitfield } => {
+                    self.writer
+                        .write(BittorrentMessage::Bitfield { bitfield: bitfield });
+                }
             }
         }
 
@@ -485,9 +490,13 @@ impl Decoder for BittorrentCodec {
         // check we have enough bytes
         let mut messages = Vec::new();
         while src.len() > 4 {
-            let len = u32::from_be_bytes([src[0], src[1], src[2], src[3]]);
-            let total_len = len as usize + 4;
+            trace!("Have {} byte(s)", src.len());
+            let message_len = u32::from_be_bytes([src[0], src[1], src[2], src[3]]);
+            let total_len = message_len as usize + 4;
             if src.len() < total_len {
+                if messages.len() == 0 {
+                    return Ok(None);
+                }
                 return Ok(Some(messages));
             }
 
@@ -520,6 +529,8 @@ impl Encoder<BittorrentMessage> for BittorrentCodec {
             self.handshake_sent = true;
         }
 
+        trace!("Sending {:?}", item);
+
         dst.extend_from_slice(&item.serialize());
 
         Ok(())
@@ -535,13 +546,29 @@ impl StreamHandler<Result<Vec<BittorrentMessage>, PeerError>> for Peer {
         match msg_result {
             Err(err) => {
                 error!("Error receiving message: {:?}", err);
-                self.coordinator_addr.do_send(PeerDisconnect {
-                    ip_address: self.ip_address,
-                    port: self.port,
-                });
+                ctx.spawn(
+                    self.coordinator_addr
+                        .send(PeerDisconnect {
+                            ip_address: self.ip_address,
+                            port: self.port,
+                        })
+                        .into_actor(self)
+                        .map(|result, _, _| {
+                            if let Err(err) = result {
+                                error!("Error disconnecting peer: {}", err);
+                            }
+                        }),
+                );
             }
-            Ok(msgs) => {
-                ctx.address().do_send(RecvMessage { msgs });
+            Ok(mut msgs) => {
+                self.messages.append(&mut msgs);
+                ctx.spawn(ctx.address().send(RecvMessage {}).into_actor(self).map(
+                    |result, _, _| {
+                        if let Err(err) = result {
+                            error!("Error signaling RecvMessage: {}", err);
+                        }
+                    },
+                ));
             }
         }
     }

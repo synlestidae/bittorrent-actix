@@ -1,9 +1,11 @@
 use std::{cmp::max, collections::HashMap, net::Ipv4Addr};
 
-use actix::prelude::*;
+use actix::{fut::ready, prelude::*};
 use bitvec::{order::Msb0, vec::BitVec};
+use log::error;
 
 use crate::{
+    assigner::Assigner,
     coordinator::{Coordinator, PeerControlGlobal},
     filer::RequestPiece,
     metadata::{CompletePiece, Info},
@@ -20,10 +22,11 @@ pub struct Commander {
 
 impl Commander {
     pub fn new(info: Info, coordinator_addr: Addr<Coordinator>) -> Commander {
+        let we_have = BitVec::repeat(false, info.num_pieces());
         Commander {
             coordinator_addr,
             peers: HashMap::new(),
-            we_have: BitVec::repeat(false, info.num_pieces()),
+            we_have,
             info,
         }
     }
@@ -65,10 +68,11 @@ pub struct CommandSet {
 }
 
 impl Handler<CommanderMsgEnvelope> for Commander {
-    type Result = ();
+    type Result = ResponseActFuture<Self, ()>;
 
     fn handle(&mut self, envelope: CommanderMsgEnvelope, ctx: &mut Self::Context) -> Self::Result {
         ctx.set_mailbox_capacity(self.peers.len() * 10 + 5);
+
         for msg in envelope.msgs.iter() {
             match (
                 msg,
@@ -82,6 +86,13 @@ impl Handler<CommanderMsgEnvelope> for Commander {
                     let peer_state = PeerState::new(info, address, we_have);
                     self.peers
                         .insert((envelope.ip_address, envelope.port), peer_state);
+
+                    let mut assigner = Assigner {
+                        we_have: &self.we_have,
+                        peers: &mut self.peers,
+                    };
+
+                    assigner.assign();
                 }
                 (CommanderMsg::RemovePeer, true) => {
                     self.peers.remove(&(envelope.ip_address, envelope.port));
@@ -94,7 +105,7 @@ impl Handler<CommanderMsgEnvelope> for Commander {
 
         let peer_state = match self.peers.get_mut(&(envelope.ip_address, envelope.port)) {
             Some(peer_state) => peer_state,
-            None => return,
+            None => return Box::pin(ready(())),
         };
 
         for msg in envelope.msgs.into_iter() {
@@ -108,7 +119,7 @@ impl Handler<CommanderMsgEnvelope> for Commander {
 
         let peer_command = peer_state.peer_command();
 
-        ctx.spawn(
+        Box::pin(
             self.coordinator_addr
                 .send(CommandSet {
                     peer_control: vec![PeerControlEnvelope {
@@ -121,7 +132,12 @@ impl Handler<CommanderMsgEnvelope> for Commander {
                     piece_requests_to_us: peer_command.piece_requests_to_us,
                     peer_change: vec![],
                 })
-                .into_actor(self).map(|_,_,_| {}),
-        );
+                .into_actor(self)
+                .map(|result, _, _| {
+                    if let Err(err) = result {
+                        error!("Error sending PeerControlEnvelope: {}", err);
+                    }
+                }),
+        )
     }
 }

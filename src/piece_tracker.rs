@@ -1,11 +1,9 @@
 use std::{
-    cmp::min,
     collections::{HashMap, HashSet},
     sync::Arc,
 };
 
 use log::trace;
-use ureq::trace;
 
 use crate::metadata::{CompletePiece, Info, Piece, PieceRequest};
 
@@ -66,6 +64,8 @@ impl PieceTracker {
                 } else {
                     pieces.push(piece);
                 }
+
+                pieces.sort_by_key(|p| p.begin);
             }
             return;
         }
@@ -92,7 +92,15 @@ impl PieceTracker {
             piece = next_piece;
         }
 
-        piece.begin + piece.block.len() as u32 >= self.info.piece_length(piece_index)
+        let complete =
+            piece.begin + piece.block.len() as u32 >= self.info.piece_length(piece_index);
+        trace!(
+            "Length for {} is {} and needs to be {}",
+            piece_index,
+            piece.begin + piece.block.len() as u32,
+            self.info.piece_length(piece_index)
+        );
+        complete
     }
 
     pub fn mark_complete(&mut self, piece_index: u32) {
@@ -250,7 +258,7 @@ impl<'a> PieceIterator<'a> {
         let final_piece = &pieces[pieces.len() - 1];
         if final_piece.begin + final_piece.length < total_length {
             let length = {
-                if final_piece.begin + self.request_size < total_length {
+                if final_piece.begin + final_piece.length + self.request_size < total_length {
                     self.request_size
                 } else {
                     total_length - (final_piece.begin + final_piece.length)
@@ -264,9 +272,15 @@ impl<'a> PieceIterator<'a> {
             };
 
             trace!("Adding end piece {:?}", piece_request);
+            trace!(
+                "Piece length is {}",
+                self.info.piece_length(piece_request.index)
+            );
 
             return Some(piece_request);
         }
+
+        trace!("Yep. Nuffink");
 
         None
     }
@@ -915,6 +929,29 @@ mod test {
         piece_tracker.remove(0);
 
         assert_eq!(piece_tracker.complete_pieces(), vec![]);
+    }
+
+    #[test]
+    pub fn test_final_piece_real_piece() {
+        // 1032192
+        // 1044480
+        let mut info = info(4);
+        info.pieces_length = 1044480;
+        let mut piece_tracker = PieceTracker::new(info);
+        piece_tracker.add_piece(Piece {
+            index: 0,
+            begin: 0,
+            block: vec![0u8; 1_032_192],
+        });
+
+        assert_eq!(
+            piece_tracker.next_pieces(&vec![0], 10),
+            vec![PieceRequest {
+                index: 0,
+                begin: 1_032_192,
+                length: 12_288
+            }]
+        );
     }
 
     fn info(pieces_length: u32) -> Info {

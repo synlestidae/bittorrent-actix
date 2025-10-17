@@ -178,6 +178,10 @@ impl Info {
     pub fn num_pieces(&self) -> usize {
         self.pieces.len()
     }
+
+    pub fn filename(&self) -> String {
+        String::from_utf8_lossy(&self.name).replace(['/', '\\', '\0'], "_")
+    }
 }
 
 fn parse_file(element: &Bencoding) -> Result<FileInfo, MetadataError> {
