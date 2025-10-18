@@ -1,8 +1,10 @@
-use crate::bittorrent::{BittorrentCodec, BittorrentMessage, DecoderError};
+use crate::bittorrent::BittorrentCodec;
+use crate::bittorrent::BittorrentMessage;
+use crate::bittorrent::DecoderError;
 use crate::commander::{CommandSet, PeerChangeEnvelope};
 use crate::coordinator::{Coordinator, PeerDisconnect};
-use crate::metadata::PieceRequest;
-use crate::peer_state::PeerChange;
+use crate::bittorrent::PieceRequest;
+use crate::commander::PeerChange;
 use actix::io::{FramedWrite, WriteHandler};
 use actix::prelude::*;
 use log::{debug, error, trace};

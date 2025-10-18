@@ -5,7 +5,7 @@ use std::{
 
 use log::trace;
 
-use crate::metadata::{CompletePiece, Info, Piece, PieceRequest};
+use crate::bittorrent::{CompletePiece, Info, Piece, PieceRequest};
 
 #[derive(Debug)]
 pub struct PieceTracker {
@@ -165,7 +165,7 @@ impl PieceTracker {
                 let complete_piece = self.get_piece(*piece_index).unwrap();
                 complete_pieces.push(CompletePiece {
                     index: *piece_index,
-                    data: Arc::from(complete_piece),
+                    data: complete_piece,
                 });
             }
         }

@@ -4,14 +4,12 @@ use actix::{fut::ready, prelude::*};
 use bitvec::{order::Msb0, vec::BitVec};
 use log::error;
 
-use crate::{
-    assigner::Assigner,
-    coordinator::{Coordinator, PeerControlGlobal},
-    filer::RequestPiece,
-    metadata::{CompletePiece, Info},
-    peer::PeerControlEnvelope,
-    peer_state::{PeerChange, PeerState},
-};
+use super::assigner::Assigner;
+use crate::coordinator::{Coordinator, PeerControlGlobal};
+use crate::filer::RequestPiece;
+use crate::bittorrent::{CompletePiece, Info};
+use crate::peer::PeerControlEnvelope;
+use super::peer_state::{PeerChange, PeerState};
 
 pub struct Commander {
     coordinator_addr: Addr<Coordinator>,

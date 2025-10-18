@@ -4,7 +4,7 @@ use std::{
     net::Ipv4Addr,
 };
 
-use crate::peer_state::PeerState;
+use super::peer_state::PeerState;
 
 pub struct Assigner<'a> {
     pub we_have: &'a BitVec<u8, Msb0>,

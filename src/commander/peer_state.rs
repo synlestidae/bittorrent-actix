@@ -4,16 +4,14 @@ use std::{
     ops::Add,
 };
 
+use crate::bittorrent::BittorrentMessage;
+use crate::coordinator::PeerControlGlobal;
+use crate::filer::RequestPiece;
+use crate::bittorrent::{CompletePiece, Info, Piece, PieceRequest};
+use crate::peer::PeerControl;
+use super::piece_tracker::PieceTracker;
 use bitvec::{order::Msb0, vec::BitVec};
 use log::{debug, trace};
-use crate::{
-    coordinator::PeerControlGlobal,
-    filer::RequestPiece,
-    metadata::{CompletePiece, Info, Piece, PieceRequest},
-    peer::{PeerControl},
-    piece_tracker::PieceTracker,
-};
-use crate::bittorrent::BittorrentMessage;
 
 const MAX_PIECE_REQUESTS: usize = 20;
 

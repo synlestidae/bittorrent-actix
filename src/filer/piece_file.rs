@@ -1,12 +1,16 @@
 use std::collections::BTreeMap;
+use std::io::SeekFrom;
 use std::sync::Arc;
 
-use tokio::io;
-use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
+use log::{debug, trace};
+use tokio::io::{self, AsyncBufReadExt};
+use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, BufReader};
 use tokio::sync::Mutex;
 
+use crate::bittorrent::{BittorrentMessage, PIECE};
 use crate::filer::FilePool;
-use crate::bittorrent::BittorrentMessage;
+
+pub const MAGIC_NUMBER: &'static [u8; 8] = b"PIECESv1";
 
 #[derive(Clone)]
 pub struct PieceFile {
@@ -26,6 +30,50 @@ impl PieceFile {
         })
     }
 
+    pub async fn initialise(&mut self) -> Result<(), io::Error> {
+        let mut magic_buf = [0u8; 8];
+
+        let mut writer = self.file_pool.writer().await?;
+        let mut reader = BufReader::new(self.file_pool.reader().await?);
+
+        reader.seek(SeekFrom::Start(0)).await?;
+
+        let bytes_read = reader.read(&mut magic_buf).await?;
+        if bytes_read == 0 {
+            writer.write_all(MAGIC_NUMBER).await?;
+        }
+        trace!("Read {} bytes for magic number", bytes_read);
+        trace!("Expected {:?} got {:?}", magic_buf, MAGIC_NUMBER);
+        if magic_buf != *MAGIC_NUMBER {
+            todo!("Need to handle this error");
+        }
+
+        let mut index = self.index.lock().await;
+        while reader.fill_buf().await?.len() != 0 {
+            let position = reader.stream_position().await?;
+
+            let length = reader.read_u32().await?;
+            trace!("Piece length is {}", length);
+            let id = reader.read_u8().await?;
+            if id != PIECE {
+                // TODO this is a magic number
+                todo!("Unexpected ID for piece: {}", id);
+            }
+            let piece_index = reader.read_u32().await?;
+
+            debug!(
+                "Adding existing piece {} at position {}",
+                piece_index, position
+            );
+            index.insert(piece_index, position);
+            reader
+                .seek(SeekFrom::Start(position + length as u64))
+                .await?;
+        }
+
+        Ok(())
+    }
+
     pub fn read(
         &mut self,
         piece_index: u32,
@@ -43,7 +91,7 @@ impl PieceFile {
             };
             let mut handle = file_pool.reader().await?;
 
-            handle.seek(std::io::SeekFrom::Start(*position)).await;
+            handle.seek(std::io::SeekFrom::Start(*position)).await?;
 
             let piece_length = handle.read_u32().await? - 9; // 9 = 1 + 2*4 = len + index + begin 
             if offset > piece_length {

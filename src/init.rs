@@ -2,9 +2,9 @@ use actix::prelude::*;
 
 use crate::coordinator::Coordinator;
 use crate::coordinator::TrackerUpdate;
-use crate::filer::FilePool;
 use crate::filer::Filer;
-use crate::metadata::Metadata;
+use crate::filer::PieceFile;
+use crate::bittorrent::Metadata;
 use crate::tracker::{AskTracker, Tracker, TrackerError};
 use tokio::io;
 
@@ -12,7 +12,7 @@ use log::debug;
 
 pub struct Init {
     metadata: Metadata,
-    file_pool: FilePool,
+    piece_file: PieceFile,
     tracker_addr: Addr<Tracker>,
     coordinator_addr: Option<Addr<Coordinator>>,
     filer_addr: Option<Addr<Filer>>,
@@ -20,7 +20,7 @@ pub struct Init {
 }
 
 impl Init {
-    pub async fn new(metadata: Metadata, file_pool: FilePool, info_hash: [u8; 20]) -> Self {
+    pub async fn new(metadata: Metadata, piece_file: PieceFile, info_hash: [u8; 20]) -> Self {
         let tracker_addr = Tracker::new(metadata.clone(), info_hash).start();
 
         Self {
@@ -28,7 +28,7 @@ impl Init {
             tracker_addr,
             coordinator_addr: None,
             filer_addr: None,
-            file_pool,
+            piece_file,
             info_hash,
         }
     }
@@ -50,6 +50,7 @@ impl Handler<InitDownload> for Init {
         let info_hash = self.info_hash.clone();
         let info = self.metadata.info.clone();
         let tracker_addr = self.tracker_addr.clone();
+        let piece_file = self.piece_file.clone();
 
         Box::pin(
             async move {
@@ -59,7 +60,7 @@ impl Handler<InitDownload> for Init {
                     Err(_) => unreachable!("Should not fail to send message on startup"),
                 };
 
-                let filer_addr = Filer::new(info.clone()).await?.start();
+                let filer_addr = Filer::new(piece_file).await?.start();
                 let coordinator_addr = Coordinator::create(|ctx| {
                     Coordinator::new(info, info_hash, filer_addr.clone(), ctx)
                 });

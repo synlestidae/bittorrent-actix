@@ -10,23 +10,17 @@ use env_logger::init;
 use log::{debug, error, info};
 use sha1::{Digest, Sha1};
 
-mod assigner;
-mod bencoding;
+mod bittorrent;
 mod commander;
 mod coordinator;
 mod filer;
 mod init;
-mod metadata;
 mod peer;
-mod peer_state;
-mod piece_tracker;
 mod tracker;
-mod bittorrent;
 
-use crate::bencoding::{Bencoding, Position};
-use crate::filer::FilePool;
+use crate::bittorrent::{Bencoding, Metadata, Position};
+use crate::filer::{PieceFile};
 use crate::init::{Init, InitDownload};
-use crate::metadata::Metadata;
 
 #[actix::main(worker_threads = 50, max_blocking_threads = 50)]
 async fn main() {
@@ -72,9 +66,10 @@ async fn main() {
 
     debug!("Starting system");
 
-    let filename = metadata.info.filename();
-    let file_pool = FilePool::open(&filename).await.unwrap();
-    let init = Init::new(metadata, file_pool, info_hash).await;
+    let filename = metadata.info.part_filename();
+    let mut piece_file = PieceFile::open(&filename).await.unwrap();
+    piece_file.initialise().await.unwrap();
+    let init = Init::new(metadata, piece_file, info_hash).await;
     let init_addr: Addr<Init> = init.start();
 
     debug!("Sending InitDownload");

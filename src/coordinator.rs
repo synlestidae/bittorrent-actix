@@ -9,11 +9,14 @@ use rand::Rng;
 use tokio::net::TcpStream;
 use tokio::time::timeout;
 
-use crate::commander::{CommandSet, Commander, CommanderMsg, CommanderMsgEnvelope};
+use crate::bittorrent::Info;
+use crate::commander::Commander;
+use crate::commander::CommandSet;
+use crate::commander::CommanderMsg;
+use crate::commander::PeerChange;
+use crate::commander::CommanderMsgEnvelope;
 use crate::filer::{Filer, RequestPieceEnvelope, WholePiece};
-use crate::metadata::Info;
 use crate::peer::{Peer, PeerControl, PeerControlEnvelope, PeerError};
-use crate::peer_state::PeerChange;
 use crate::tracker::TrackerResponse;
 
 const TIMEOUT_CONNECT_SECS: u64 = 5;
@@ -272,7 +275,7 @@ impl Handler<CommandSet> for Coordinator {
 
                 for filer_fut in filer_request_futures {
                     match filer_fut.await {
-                        Ok(_command_set) => (), 
+                        Ok(_command_set) => (),
                         Err(err) => {
                             error!("Error between coordinator and filer: {}", err);
                         }
@@ -283,7 +286,7 @@ impl Handler<CommandSet> for Coordinator {
                     match filer_fut.await {
                         Ok(_) => {
                             // TODO need to send the Have message where necessary?
-                        }, 
+                        }
                         Err(err) => {
                             error!("Error between coordinator and filer: {}", err);
                         }

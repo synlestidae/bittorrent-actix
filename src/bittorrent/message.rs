@@ -1,6 +1,9 @@
 use std::error;
 use std::fmt;
 
+use crate::bittorrent::NOT_INTERESTED;
+use super::ids::*;
+
 #[derive(Debug)]
 pub enum BittorrentMessage {
     KeepAlive,
@@ -53,11 +56,11 @@ impl BittorrentMessage {
         let payload = &data[5..4 + length];
 
         match id {
-            0 => Ok(BittorrentMessage::Choke),
-            1 => Ok(BittorrentMessage::Unchoke),
-            2 => Ok(BittorrentMessage::Interested),
-            3 => Ok(BittorrentMessage::NotInterested),
-            4 => {
+            CHOKE => Ok(BittorrentMessage::Choke),
+            UNCHOKE => Ok(BittorrentMessage::Unchoke),
+            INTERESTED => Ok(BittorrentMessage::Interested),
+            NOT_INTERESTED => Ok(BittorrentMessage::NotInterested),
+            HAVE => {
                 if payload.len() != 4 {
                     return Err(ParseError::InvalidLength);
                 }
@@ -65,10 +68,10 @@ impl BittorrentMessage {
                     u32::from_be_bytes([payload[0], payload[1], payload[2], payload[3]]);
                 Ok(BittorrentMessage::Have { piece_index })
             }
-            5 => Ok(BittorrentMessage::Bitfield {
+            BITFIELD => Ok(BittorrentMessage::Bitfield {
                 bitfield: payload.to_vec(),
             }),
-            6 => {
+            REQUEST => {
                 if payload.len() != 12 {
                     return Err(ParseError::InvalidLength);
                 }
@@ -82,7 +85,7 @@ impl BittorrentMessage {
                     length,
                 })
             }
-            7 => {
+            PIECE => {
                 let index = u32::from_be_bytes([payload[0], payload[1], payload[2], payload[3]]);
                 let begin = u32::from_be_bytes([payload[4], payload[5], payload[6], payload[7]]);
                 let block = payload[8..payload.len()].to_vec();
@@ -93,7 +96,7 @@ impl BittorrentMessage {
                     block,
                 })
             }
-            8 => {
+            CANCEL => {
                 let index = u32::from_be_bytes([payload[0], payload[1], payload[2], payload[3]]);
                 let begin = u32::from_be_bytes([payload[4], payload[5], payload[6], payload[7]]);
                 let length = u32::from_be_bytes([payload[8], payload[9], payload[10], payload[11]]);
@@ -104,7 +107,7 @@ impl BittorrentMessage {
                     length,
                 })
             }
-            9 => {
+            PORT => {
                 let port = u16::from_be_bytes([payload[0], payload[1]]);
 
                 Ok(BittorrentMessage::Port { port })
@@ -193,16 +196,15 @@ pub enum ParseError {
 
 impl fmt::Display for ParseError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-       match self {
-           ParseError::InvalidLength => write!(f, "invalid length"),
-           ParseError::UnknownId(_) => write!(f, "unknown id"),
-           ParseError::Malformed => write!(f, "malformed"),
-       }
+        match self {
+            ParseError::InvalidLength => write!(f, "invalid length"),
+            ParseError::UnknownId(_) => write!(f, "unknown id"),
+            ParseError::Malformed => write!(f, "malformed"),
+        }
     }
 }
 
-impl error::Error for ParseError {
-}
+impl error::Error for ParseError {}
 
 pub struct BittorrentHandshake {
     pub info_hash: [u8; 20],
@@ -224,4 +226,3 @@ impl BittorrentHandshake {
         49 + 20 + 20
     }
 }
-

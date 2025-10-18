@@ -4,38 +4,22 @@ use actix::prelude::*;
 use log::debug;
 use tokio::io;
 
-use crate::commander::CommandSet;
-use crate::metadata::Info;
-use crate::peer::{PeerControl, PeerControlEnvelope};
 use super::PieceFile;
+use crate::commander::CommandSet;
+use crate::peer::{PeerControl, PeerControlEnvelope};
 
 pub struct Filer {
-    info: Info,
     piece_file: PieceFile,
 }
 
-const MAGIC_NUMBER: &'static [u8; 8] = b"PIECESv1";
-
-const CHANNEL_DEPTH: usize = 100;
-
 impl Filer {
-    pub async fn new(info: Info) -> Result<Self, io::Error> {
-        let filename = info.filename();
-        let piece_file = PieceFile::open(&filename).await?;
-
-        Ok(Self { info, piece_file })
+    pub async fn new(piece_file: PieceFile) -> Result<Self, io::Error> {
+        Ok(Self { piece_file })
     }
 }
 
 impl Actor for Filer {
     type Context = Context<Self>;
-}
-
-pub enum FilerEvent {
-    WrongSha1 { piece_index: u32 },
-    IndexOutOfBounds { piece_index: u32 },
-    FilerMsgErr,
-    Accepted { piece_index: u32 },
 }
 
 #[derive(Message)]

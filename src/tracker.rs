@@ -1,5 +1,5 @@
-use crate::bencoding::Bencoding;
-use crate::metadata::Metadata;
+use crate::bittorrent::Bencoding;
+use crate::bittorrent::Metadata;
 use actix::prelude::*;
 use log::{debug, error};
 use percent_encoding::{NON_ALPHANUMERIC, percent_encode};

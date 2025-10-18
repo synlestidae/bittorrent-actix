@@ -1,12 +1,12 @@
 use core::fmt;
 use std::error;
 
+use log::trace;
+use tokio::io;
 use tokio_util::bytes::BytesMut;
 use tokio_util::codec::{Decoder, Encoder};
-use tokio::io;
-use log::trace;
 
-use super::{BittorrentMessage, ParseError, BittorrentHandshake};
+use super::{BittorrentHandshake, BittorrentMessage, ParseError};
 
 #[derive(Clone)]
 pub struct BittorrentCodec {
@@ -25,7 +25,6 @@ impl BittorrentCodec {
             peer_id,
         }
     }
-
 }
 
 impl Decoder for BittorrentCodec {
@@ -122,15 +121,14 @@ pub enum DecoderError {
 
 impl fmt::Display for DecoderError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-       match self {
-           DecoderError::Io(err) => err.fmt(f),
-           DecoderError::Parse(err) => err.fmt(f),
-       }
+        match self {
+            DecoderError::Io(err) => err.fmt(f),
+            DecoderError::Parse(err) => err.fmt(f),
+        }
     }
 }
 
-impl error::Error for DecoderError {
-}
+impl error::Error for DecoderError {}
 
 impl From<io::Error> for DecoderError {
     fn from(err: io::Error) -> Self {

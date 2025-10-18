@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::bencoding::{Bencoding, Position};
+use super::bencoding::{Bencoding, Position};
 use log::{debug, error};
 use sha1::{Digest, Sha1};
 
@@ -179,8 +179,10 @@ impl Info {
         self.pieces.len()
     }
 
-    pub fn filename(&self) -> String {
-        String::from_utf8_lossy(&self.name).replace(['/', '\\', '\0'], "_")
+    pub fn part_filename(&self) -> String {
+        let sanitised_name = String::from_utf8_lossy(&self.name).replace(['/', '\\', '\0'], "_");
+
+        format!("{}.part", sanitised_name)
     }
 }
 
@@ -236,24 +238,4 @@ fn parse_path(element: &Bencoding) -> Result<Vec<u8>, MetadataError> {
         Bencoding::ByteString { byte_string, .. } => Ok(byte_string.clone()),
         _ => Err(MetadataError::InvalidPath),
     }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Piece {
-    pub index: u32,
-    pub begin: u32,
-    pub block: Vec<u8>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PieceRequest {
-    pub index: u32,
-    pub begin: u32,
-    pub length: u32,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct CompletePiece {
-    pub index: u32,
-    pub data: Arc<[u8]>,
 }

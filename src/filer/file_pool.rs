@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use log::debug;
 use tokio::fs::File;
+use tokio::io::AsyncReadExt;
 use tokio::io::Error;
 
 use tokio::sync::Mutex;
