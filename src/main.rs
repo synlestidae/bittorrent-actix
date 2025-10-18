@@ -14,18 +14,17 @@ mod assigner;
 mod bencoding;
 mod commander;
 mod coordinator;
-mod file;
 mod filer;
 mod init;
 mod metadata;
 mod peer;
 mod peer_state;
-mod piece_file;
 mod piece_tracker;
 mod tracker;
+mod bittorrent;
 
 use crate::bencoding::{Bencoding, Position};
-use crate::file::FilePool;
+use crate::filer::FilePool;
 use crate::init::{Init, InitDownload};
 use crate::metadata::Metadata;
 

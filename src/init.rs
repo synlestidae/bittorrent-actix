@@ -1,7 +1,8 @@
 use actix::prelude::*;
 
-use crate::coordinator::{Coordinator, TrackerUpdate};
-use crate::file::FilePool;
+use crate::coordinator::Coordinator;
+use crate::coordinator::TrackerUpdate;
+use crate::filer::FilePool;
 use crate::filer::Filer;
 use crate::metadata::Metadata;
 use crate::tracker::{AskTracker, Tracker, TrackerError};

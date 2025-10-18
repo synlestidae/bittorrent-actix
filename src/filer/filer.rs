@@ -7,7 +7,7 @@ use tokio::io;
 use crate::commander::CommandSet;
 use crate::metadata::Info;
 use crate::peer::{PeerControl, PeerControlEnvelope};
-use crate::piece_file::PieceFile;
+use super::PieceFile;
 
 pub struct Filer {
     info: Info,

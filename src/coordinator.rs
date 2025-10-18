@@ -10,7 +10,7 @@ use tokio::net::TcpStream;
 use tokio::time::timeout;
 
 use crate::commander::{CommandSet, Commander, CommanderMsg, CommanderMsgEnvelope};
-use crate::filer::{Filer, FilerEvent, RequestPieceEnvelope, WholePiece};
+use crate::filer::{Filer, RequestPieceEnvelope, WholePiece};
 use crate::metadata::Info;
 use crate::peer::{Peer, PeerControl, PeerControlEnvelope, PeerError};
 use crate::peer_state::PeerChange;
@@ -292,22 +292,6 @@ impl Handler<CommandSet> for Coordinator {
             })()
             .into_actor(self),
         );
-    }
-}
-
-#[derive(Message)]
-#[rtype(result = "()")]
-pub struct FilerResult {
-    pub ip_address: Ipv4Addr,
-    pub port: u16,
-    pub event: FilerEvent,
-}
-
-impl Handler<FilerResult> for Coordinator {
-    type Result = ();
-
-    fn handle(&mut self, msg: FilerResult, _ctx: &mut Context<Self>) -> Self::Result {
-        unimplemented!()
     }
 }
 
