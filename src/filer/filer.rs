@@ -4,17 +4,18 @@ use actix::prelude::*;
 use log::debug;
 use tokio::io;
 
-use crate::bittorrent::BittorrentMessage;
+use crate::bittorrent::{BittorrentMessage, Info};
 
 use super::PieceFile;
 
 pub struct Filer {
+    info: Info,
     piece_file: PieceFile,
 }
 
 impl Filer {
-    pub async fn new(piece_file: PieceFile) -> Result<Self, io::Error> {
-        Ok(Self { piece_file })
+    pub async fn new(info: Info, piece_file: PieceFile) -> Result<Self, io::Error> {
+        Ok(Self { info, piece_file })
     }
 }
 

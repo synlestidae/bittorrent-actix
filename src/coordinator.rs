@@ -10,7 +10,7 @@ use tokio::net::TcpStream;
 use tokio::time::timeout;
 
 use crate::bittorrent::{BittorrentMessage, Info};
-use crate::filer::{self, Filer, RequestPiece, RequestPieces, WholePiece};
+use crate::filer::{Filer, RequestPiece, RequestPieces, WholePiece};
 use crate::peer::{Peer, PeerError, SendMessages};
 use crate::tracker::TrackerResponse;
 
@@ -96,14 +96,20 @@ impl Coordinator {
     }
 
     fn store_whole_pieces(&mut self, whole_pieces: Vec<WholePiece>) -> ResponseActFuture<Self, ()> {
-        unimplemented!()
+        let filer_addr = self.filer_addr.clone();
+        return Box::pin(
+            async move {
+                for whole_piece in whole_pieces.into_iter() {
+                    filer_addr.send(whole_piece).await.unwrap().unwrap();
+                }
+            }
+            .into_actor(self),
+        );
     }
 }
 
 impl Actor for Coordinator {
     type Context = Context<Self>;
-
-    fn started(&mut self, ctx: &mut Self::Context) {}
 }
 
 #[derive(Message)]
@@ -353,9 +359,4 @@ impl Handler<PeerDisconnect> for Coordinator {
                 }),
         );
     }
-}
-
-#[derive(Debug, PartialEq, Eq)]
-pub enum PeerControlGlobal {
-    HavePiece { piece_index: u32 },
 }

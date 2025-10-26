@@ -16,6 +16,7 @@ pub const MAGIC_NUMBER: &'static [u8; 8] = b"PIECESv1";
 pub struct PieceFile {
     index: Arc<Mutex<BTreeMap<u32, u64>>>,
     file_pool: FilePool,
+    highest_piece: i32,
 }
 
 const BITTORRENT_PIECE_MSG_ID: u8 = 7;
@@ -27,6 +28,7 @@ impl PieceFile {
         Ok(Self {
             file_pool,
             index: Arc::new(Mutex::new(BTreeMap::new())),
+            highest_piece: -1
         })
     }
 
@@ -65,6 +67,9 @@ impl PieceFile {
                 "Adding existing piece {} at position {}",
                 piece_index, position
             );
+            if piece_index > self.highest_piece {
+                self.highest_piece = piece_index as i32;
+            }
             index.insert(piece_index, position);
             reader
                 .seek(SeekFrom::Start(position + length as u64))
