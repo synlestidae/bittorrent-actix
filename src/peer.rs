@@ -1,13 +1,12 @@
 use crate::bittorrent::BittorrentCodec;
 use crate::bittorrent::BittorrentMessage;
 use crate::bittorrent::DecoderError;
-use crate::commander::{CommandSet, PeerChangeEnvelope};
+use crate::commander::CommanderRequest;
+use crate::coordinator::RecvMessage;
 use crate::coordinator::{Coordinator, PeerDisconnect};
-use crate::bittorrent::PieceRequest;
-use crate::commander::PeerChange;
 use actix::io::{FramedWrite, WriteHandler};
 use actix::prelude::*;
-use log::{debug, error, trace};
+use log::{debug, error};
 use std::net::Ipv4Addr;
 use std::string::ParseError;
 use tokio::io;
@@ -53,7 +52,7 @@ impl Peer {
 
 #[derive(Message)]
 #[rtype(result = "()")]
-pub struct RecvMessage {}
+struct NotifyRecv {}
 
 #[derive(Message, Debug)]
 #[rtype(result = "Result<(), PeerError>")]
@@ -82,32 +81,27 @@ impl Handler<HavePiece> for Peer {
     }
 }
 
-impl Handler<RecvMessage> for Peer {
+impl Handler<NotifyRecv> for Peer {
     type Result = ResponseActFuture<Self, ()>;
 
-    fn handle(&mut self, _: RecvMessage, _ctx: &mut Context<Self>) -> Self::Result {
+    fn handle(&mut self, _: NotifyRecv, _ctx: &mut Context<Self>) -> Self::Result {
         let ip_address = self.ip_address;
         let port = self.port;
-        let mut peer_change: PeerChange = Default::default();
-        let mut command_set: CommandSet = Default::default();
 
-        for msg in self.messages.drain(..) {
-            peer_change.handle_message(msg)
-        }
-
-        command_set.peer_change.push(PeerChangeEnvelope {
+        let messages = self.messages.drain(..).collect();
+        let recv_message = RecvMessage {
             ip_address,
             port,
-            peer_change,
-        });
+            messages,
+        };
 
         Box::pin(
             self.coordinator_addr
-                .send(command_set)
+                .send(recv_message)
                 .into_actor(self)
                 .map(|result, _, _| {
                     if let Err(err) = result {
-                        error!("Error sending command set: {}", err);
+                        error!("Error sending to coordinator: {}", err);
                     }
                 }),
         )
@@ -140,88 +134,16 @@ impl From<ParseError> for PeerError {
 
 #[derive(Message, Debug)]
 #[rtype(result = "Result<(), PeerError>")]
-pub struct PeerControlEnvelope {
-    pub ip_address: Ipv4Addr,
-    pub port: u16,
-    pub messages: Vec<PeerControl>,
+pub struct SendMessages {
+    pub messages: Vec<BittorrentMessage>,
 }
 
-#[derive(Message, Debug, PartialEq, Eq)]
-#[rtype(result = "Result<(), PeerError>")]
-pub enum PeerControl {
-    ChokeThem,
-    UnchokeThem,
-    Interested,
-    NotInterested,
-    RequestPieces {
-        piece_requests: Vec<PieceRequest>,
-    },
-    UploadPieceToThem {
-        index: u32,
-        begin: u32,
-        block: Vec<u8>,
-    },
-    HavePiece {
-        index: u32,
-    },
-    Bitfield {
-        bitfield: Vec<u8>,
-    },
-}
-
-impl Handler<PeerControlEnvelope> for Peer {
+impl Handler<SendMessages> for Peer {
     type Result = Result<(), PeerError>;
 
-    fn handle(&mut self, envelope: PeerControlEnvelope, _ctx: &mut Context<Self>) -> Self::Result {
+    fn handle(&mut self, envelope: SendMessages, _ctx: &mut Context<Self>) -> Self::Result {
         for msg in envelope.messages.into_iter() {
-            trace!("Received peer control {:?}", msg);
-            match msg {
-                PeerControl::ChokeThem => {
-                    debug!("Sending Choke to {}:{}", self.ip_address, self.port);
-                    self.writer.write(BittorrentMessage::Choke);
-                }
-                PeerControl::UnchokeThem => {
-                    debug!("Sending Unchoke to {}:{}", self.ip_address, self.port);
-                    self.writer.write(BittorrentMessage::Unchoke);
-                }
-                PeerControl::Interested => {
-                    debug!("Sending Interested to {}:{}", self.ip_address, self.port);
-                    self.writer.write(BittorrentMessage::Interested);
-                }
-                PeerControl::NotInterested => {
-                    debug!("Sending NotInterested to {}:{}", self.ip_address, self.port);
-                    self.writer.write(BittorrentMessage::NotInterested);
-                }
-                PeerControl::RequestPieces { piece_requests } => {
-                    debug!("Sending PieceRequests to {}:{}", self.ip_address, self.port);
-                    for piece_request in piece_requests.into_iter() {
-                        self.writer.write(BittorrentMessage::Request {
-                            index: piece_request.index,
-                            begin: piece_request.begin,
-                            length: piece_request.length,
-                        });
-                    }
-                }
-                PeerControl::UploadPieceToThem {
-                    index,
-                    begin,
-                    block,
-                } => {
-                    self.writer.write(BittorrentMessage::Piece {
-                        index,
-                        begin,
-                        block,
-                    });
-                }
-                PeerControl::HavePiece { index } => {
-                    self.writer
-                        .write(BittorrentMessage::Have { piece_index: index });
-                }
-                PeerControl::Bitfield { bitfield } => {
-                    self.writer
-                        .write(BittorrentMessage::Bitfield { bitfield: bitfield });
-                }
-            }
+            self.writer.write(msg);
         }
 
         Ok(())
@@ -253,13 +175,7 @@ impl StreamHandler<Result<Vec<BittorrentMessage>, DecoderError>> for Peer {
             }
             Ok(mut msgs) => {
                 self.messages.append(&mut msgs);
-                ctx.spawn(ctx.address().send(RecvMessage {}).into_actor(self).map(
-                    |result, _, _| {
-                        if let Err(err) = result {
-                            error!("Error signaling RecvMessage: {}", err);
-                        }
-                    },
-                ));
+                ctx.notify(NotifyRecv {});
             }
         }
     }

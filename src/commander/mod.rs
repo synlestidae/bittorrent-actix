@@ -1,11 +1,9 @@
 mod assigner;
+mod command;
 mod commander;
 mod peer_state;
 mod piece_tracker;
 
+pub use command::Command;
+pub use command::CommanderRequest;
 pub use commander::Commander;
-pub use commander::CommandSet;
-pub use commander::CommanderMsg;
-pub use peer_state::PeerChange;
-pub use commander::PeerChangeEnvelope;
-pub use commander::CommanderMsgEnvelope;

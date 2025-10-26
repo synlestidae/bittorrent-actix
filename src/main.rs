@@ -19,7 +19,7 @@ mod peer;
 mod tracker;
 
 use crate::bittorrent::{Bencoding, Metadata, Position};
-use crate::filer::{PieceFile};
+use crate::filer::PieceFile;
 use crate::init::{Init, InitDownload};
 
 #[actix::main(worker_threads = 50, max_blocking_threads = 50)]

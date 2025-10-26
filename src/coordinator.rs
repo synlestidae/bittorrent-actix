@@ -4,20 +4,19 @@ use std::net::Ipv4Addr;
 use std::time::Duration;
 
 use actix::prelude::*;
-use log::{debug, error};
+use log::{debug, error, warn};
 use rand::Rng;
 use tokio::net::TcpStream;
 use tokio::time::timeout;
 
-use crate::bittorrent::Info;
-use crate::commander::Commander;
-use crate::commander::CommandSet;
-use crate::commander::CommanderMsg;
-use crate::commander::PeerChange;
-use crate::commander::CommanderMsgEnvelope;
-use crate::filer::{Filer, RequestPieceEnvelope, WholePiece};
-use crate::peer::{Peer, PeerControl, PeerControlEnvelope, PeerError};
+use crate::bittorrent::{BittorrentMessage, Info};
+use crate::filer::{self, Filer, RequestPiece, RequestPieces, WholePiece};
+use crate::peer::{Peer, PeerError, SendMessages};
 use crate::tracker::TrackerResponse;
+
+use crate::commander::Command;
+use crate::commander::Commander;
+use crate::commander::CommanderRequest;
 
 const TIMEOUT_CONNECT_SECS: u64 = 5;
 
@@ -43,6 +42,61 @@ impl Coordinator {
             peer_addrs: HashMap::new(),
             info_hash,
         }
+    }
+
+    fn send_messages(
+        &mut self,
+        messages: HashMap<(Ipv4Addr, u16), Vec<BittorrentMessage>>,
+    ) -> ResponseActFuture<Self, ()> {
+        let peer_addrs = self.peer_addrs.clone();
+        Box::pin(
+            async move {
+                for ((ip_address, port), messages) in messages {
+                    match peer_addrs.get(&(ip_address, port)) {
+                        Some(peer_addr) => {
+                            peer_addr
+                                .send(SendMessages { messages })
+                                .await
+                                .unwrap()
+                                .unwrap(); // TODO
+                        }
+                        _ => unimplemented!(),
+                    }
+                }
+            }
+            .into_actor(self),
+        )
+    }
+
+    fn handle_piece_requests_from_them(
+        &mut self,
+        request_pieces: RequestPieces,
+    ) -> ResponseActFuture<Self, ()> {
+        let filer_addr = self.filer_addr.clone();
+        let peer_addrs = self.peer_addrs.clone();
+
+        Box::pin(
+            async move {
+                let messages_to_send = filer_addr.send(request_pieces).await.unwrap().unwrap();
+                for (ip_address, port, message) in messages_to_send.into_iter() {
+                    match peer_addrs.get(&(ip_address, port)) {
+                        Some(peer_addr) => peer_addr
+                            .send(SendMessages {
+                                messages: vec![message],
+                            })
+                            .await
+                            .unwrap()
+                            .unwrap(),
+                        None => warn!("Peer {}:{} is missing", ip_address, port),
+                    }
+                }
+            }
+            .into_actor(self),
+        )
+    }
+
+    fn store_whole_pieces(&mut self, whole_pieces: Vec<WholePiece>) -> ResponseActFuture<Self, ()> {
+        unimplemented!()
     }
 }
 
@@ -171,11 +225,7 @@ impl Handler<NewPeer> for Coordinator {
                     ctx.spawn(
                         actor
                             .commander_addr
-                            .send(CommanderMsgEnvelope {
-                                ip_address,
-                                port,
-                                msgs: vec![CommanderMsg::AddPeer],
-                            })
+                            .send(CommanderRequest::AddPeer { ip_address, port })
                             .into_actor(actor)
                             .map(|result, _, _| {
                                 if let Err(err) = result {
@@ -191,110 +241,95 @@ impl Handler<NewPeer> for Coordinator {
     }
 }
 
-impl Handler<CommandSet> for Coordinator {
-    type Result = ResponseActFuture<Self, ()>;
+#[derive(Message)]
+#[rtype(result = "Result<(), PeerError>")]
+pub struct RecvMessage {
+    pub ip_address: Ipv4Addr,
+    pub port: u16,
+    pub messages: Vec<BittorrentMessage>,
+}
 
-    fn handle(&mut self, msg: CommandSet, ctx: &mut Context<Self>) -> Self::Result {
-        ctx.set_mailbox_capacity(self.peer_addrs.len() * 10 + 5);
+impl Handler<RecvMessage> for Coordinator {
+    type Result = ResponseActFuture<Self, Result<(), PeerError>>;
 
-        let mut outgoing_peer_controls: HashMap<(Ipv4Addr, u16), Vec<PeerControl>> = HashMap::new();
-        let mut outgoing_peer_changes: HashMap<(Ipv4Addr, u16), Vec<PeerChange>> = HashMap::new();
+    fn handle(&mut self, msg: RecvMessage, ctx: &mut Context<Self>) -> Self::Result {
+        // forward to the coordinator
+        // apply commands
+        let request = CommanderRequest::RecvMessages {
+            ip_address: msg.ip_address,
+            port: msg.port,
+            messages: msg.messages,
+        };
+        let commander_addr = self.commander_addr.clone();
 
-        for envelope in msg.peer_control.into_iter() {
-            for msg in envelope.messages {
-                outgoing_peer_controls
-                    .entry((envelope.ip_address, envelope.port))
-                    .or_default()
-                    .push(msg);
-            }
-        }
+        // TODO Execute commands by scheduling N futures
+        // And combine them into one future
+        return Box::pin(commander_addr.send(request).into_actor(self).map(
+            move |result, actor, ctx| {
+                // OK this gets a little complicated, but we can handle it.
+                // First of all, we need to send those messages out. AND IN ORDER.
+                //
+                // Therefore group all messages by peer address
+                // Then for each peer, send() that batch of messages
+                // We do not need anything by way of response
+                //
+                // For the piece requests, first request the filer for the piece data
+                // Then send() the piece requests as a batch of messages
+                //
+                // Finally, when we receive a whole piece, forward to the filer.
+                // We do not need anything by way of response from filer
+                //
+                let commands = result.unwrap();
 
-        for peer_change_envelope in msg.peer_change.into_iter() {
-            outgoing_peer_changes
-                .entry((peer_change_envelope.ip_address, peer_change_envelope.port))
-                .or_default()
-                .push(peer_change_envelope.peer_change);
-        }
+                let mut peer_msgs: HashMap<(Ipv4Addr, u16), Vec<_>> = HashMap::new();
 
-        let mut peer_control_vec = Vec::new();
-        for ((ip_address, port), messages) in outgoing_peer_controls.into_iter() {
-            match self.peer_addrs.get(&(ip_address, port)) {
-                Some(peer_addr) => peer_control_vec.push(peer_addr.send(PeerControlEnvelope {
-                    ip_address,
-                    port,
-                    messages,
-                })),
-                None => drop(messages),
-            }
-        }
+                let mut request_piece_envelope = RequestPieces {
+                    request_pieces: Vec::new(),
+                };
+                let mut whole_pieces = Vec::new();
 
-        let mut commander_send_vec = Vec::new();
-        for ((ip_address, port), msgs) in outgoing_peer_changes.into_iter() {
-            commander_send_vec.push(
-                self.commander_addr.send(CommanderMsgEnvelope {
-                    ip_address,
-                    port,
-                    msgs: msgs
-                        .into_iter()
-                        .map(|peer_change| CommanderMsg::PeerChange { peer_change })
-                        .collect(),
-                }),
-            );
-        }
-
-        let mut filer_request_futures = Vec::new();
-        if !msg.piece_requests_to_us.is_empty() {
-            filer_request_futures.push(self.filer_addr.send(RequestPieceEnvelope {
-                request_pieces: msg.piece_requests_to_us,
-            }));
-        }
-
-        let mut filer_whole_piece_futures = Vec::new();
-        if !msg.complete_pieces.is_empty() {
-            for complete_piece in msg.complete_pieces {
-                filer_whole_piece_futures.push(self.filer_addr.send(WholePiece {
-                    index: complete_piece.index,
-                    data: complete_piece.data.to_vec(),
-                }));
-            }
-        }
-
-        return Box::pin(
-            (async move || {
-                for peer_control_fut in peer_control_vec.into_iter() {
-                    if let Err(err) = peer_control_fut.await {
-                        error!("Peer control error: {}", err);
+                commands.into_iter().for_each(|command| match command {
+                    Command::SendPeerMessage {
+                        ip_address,
+                        port,
+                        message,
+                    } => {
+                        peer_msgs
+                            .entry((ip_address, port))
+                            .or_default()
+                            .push(message);
                     }
-                }
-
-                for commander_send_fut in commander_send_vec.into_iter() {
-                    if let Err(err) = commander_send_fut.await {
-                        error!("Commander error: {}", err);
+                    Command::PieceRequestFromThem {
+                        ip_address,
+                        port,
+                        request,
+                    } => request_piece_envelope.request_pieces.push(RequestPiece {
+                        ip_address,
+                        port,
+                        index: request.index,
+                        begin: request.begin,
+                        length: request.length,
+                    }),
+                    Command::WholePiece {
+                        ip_address: _,
+                        port: _,
+                        whole_piece,
+                    } => {
+                        whole_pieces.push(whole_piece);
                     }
-                }
+                });
 
-                for filer_fut in filer_request_futures {
-                    match filer_fut.await {
-                        Ok(_command_set) => (),
-                        Err(err) => {
-                            error!("Error between coordinator and filer: {}", err);
-                        }
-                    }
-                }
+                // Now all the messages are organised
 
-                for filer_fut in filer_whole_piece_futures {
-                    match filer_fut.await {
-                        Ok(_) => {
-                            // TODO need to send the Have message where necessary?
-                        }
-                        Err(err) => {
-                            error!("Error between coordinator and filer: {}", err);
-                        }
-                    }
-                }
-            })()
-            .into_actor(self),
-        );
+                // Each of these returns one future, all of whom can be spawned.
+                // The order of execution does not matter
+                ctx.spawn(actor.send_messages(peer_msgs));
+                ctx.spawn(actor.handle_piece_requests_from_them(request_piece_envelope));
+                ctx.spawn(actor.store_whole_pieces(whole_pieces));
+
+                Ok(())
+            },
+        ));
     }
 }
 
@@ -306,10 +341,9 @@ impl Handler<PeerDisconnect> for Coordinator {
         self.peer_addrs.remove(&(msg.ip_address, msg.port));
         ctx.spawn(
             self.commander_addr
-                .send(CommanderMsgEnvelope {
+                .send(CommanderRequest::RemovePeer {
                     ip_address: msg.ip_address,
                     port: msg.port,
-                    msgs: vec![CommanderMsg::RemovePeer],
                 })
                 .into_actor(self)
                 .map(|result, _, _| {

@@ -3,5 +3,5 @@ mod filer;
 mod piece_file;
 
 pub use file_pool::FilePool;
-pub use filer::{Filer, RequestPiece, RequestPieceEnvelope, WholePiece};
+pub use filer::{Filer, RequestPiece, RequestPieces, WholePiece};
 pub use piece_file::PieceFile;

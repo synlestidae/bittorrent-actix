@@ -1,8 +1,8 @@
 use std::error;
 use std::fmt;
 
-use crate::bittorrent::NOT_INTERESTED;
 use super::ids::*;
+use crate::bittorrent::NOT_INTERESTED;
 
 #[derive(Debug)]
 pub enum BittorrentMessage {

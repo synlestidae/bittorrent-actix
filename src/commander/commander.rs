@@ -1,15 +1,16 @@
-use std::{cmp::max, collections::HashMap, net::Ipv4Addr};
+use std::{collections::HashMap, net::Ipv4Addr};
 
-use actix::{fut::ready, prelude::*};
-use bitvec::{order::Msb0, vec::BitVec};
-use log::error;
+use actix::prelude::*;
+use bitvec::order::Msb0;
+use bitvec::vec::BitVec;
+use log::warn;
 
-use super::assigner::Assigner;
-use crate::coordinator::{Coordinator, PeerControlGlobal};
-use crate::filer::RequestPiece;
-use crate::bittorrent::{CompletePiece, Info};
-use crate::peer::PeerControlEnvelope;
-use super::peer_state::{PeerChange, PeerState};
+use super::peer_state::PeerState;
+use crate::bittorrent::Info;
+use crate::commander::Command;
+use crate::commander::command::CommanderRequest;
+use crate::commander::peer_state::PeerChange;
+use crate::coordinator::Coordinator;
 
 pub struct Commander {
     coordinator_addr: Addr<Coordinator>,
@@ -34,108 +35,42 @@ impl Actor for Commander {
     type Context = Context<Self>;
 }
 
-#[derive(Message)]
-#[rtype(result = "()")]
-pub struct CommanderMsgEnvelope {
-    pub ip_address: Ipv4Addr,
-    pub port: u16,
-    pub msgs: Vec<CommanderMsg>,
-}
+impl Handler<CommanderRequest> for Commander {
+    type Result = Vec<Command>;
 
-pub enum CommanderMsg {
-    AddPeer,
-    RemovePeer,
-    PeerChange { peer_change: PeerChange },
-}
+    fn handle(&mut self, msg: CommanderRequest, _ctx: &mut Self::Context) -> Self::Result {
+        match msg {
+            CommanderRequest::AddPeer { ip_address, port } => {
+                let address = (ip_address, port);
+                let peer_state = PeerState::new(self.info.clone(), address, self.we_have.clone());
+                self.peers.insert(address, peer_state);
 
-#[derive(Debug)]
-pub struct PeerChangeEnvelope {
-    pub ip_address: Ipv4Addr,
-    pub port: u16,
-    pub peer_change: PeerChange,
-}
+                vec![]
+            }
+            CommanderRequest::RemovePeer { ip_address, port } => {
+                self.peers.remove(&(ip_address, port));
 
-#[derive(Message, Debug, Default)]
-#[rtype(result = "()")]
-pub struct CommandSet {
-    pub peer_change: Vec<PeerChangeEnvelope>,
-    pub peer_control: Vec<PeerControlEnvelope>,
-    pub peer_control_global: Vec<PeerControlGlobal>,
-    pub complete_pieces: Vec<CompletePiece>,
-    pub piece_requests_to_us: Vec<RequestPiece>,
-}
-
-impl Handler<CommanderMsgEnvelope> for Commander {
-    type Result = ResponseActFuture<Self, ()>;
-
-    fn handle(&mut self, envelope: CommanderMsgEnvelope, ctx: &mut Self::Context) -> Self::Result {
-        ctx.set_mailbox_capacity(self.peers.len() * 10 + 5);
-
-        for msg in envelope.msgs.iter() {
-            match (
-                msg,
-                self.peers
-                    .contains_key(&(envelope.ip_address, envelope.port)),
-            ) {
-                (CommanderMsg::AddPeer, false) => {
-                    let address = (envelope.ip_address, envelope.port);
-                    let info = self.info.clone();
-                    let we_have = self.we_have.clone();
-                    let peer_state = PeerState::new(info, address, we_have);
-                    self.peers
-                        .insert((envelope.ip_address, envelope.port), peer_state);
-
-                    let mut assigner = Assigner {
-                        we_have: &self.we_have,
-                        peers: &mut self.peers,
-                    };
-
-                    assigner.assign();
+                vec![]
+            }
+            CommanderRequest::RecvMessages {
+                ip_address,
+                port,
+                messages,
+            } => {
+                if let Some(peer_state) = self.peers.get_mut(&(ip_address, port)) {
+                    for message in messages.into_iter() {
+                        peer_state.change(PeerChange::RecvMessage { message });
+                    }
+                    return peer_state.commands();
                 }
-                (CommanderMsg::RemovePeer, true) => {
-                    self.peers.remove(&(envelope.ip_address, envelope.port));
-                }
-                _ => (),
-            };
-        }
 
-        ctx.set_mailbox_capacity(max(self.peers.len() * 5, 5));
+                warn!(
+                    "Processed messages but peer {}:{} is missing",
+                    ip_address, port
+                );
 
-        let peer_state = match self.peers.get_mut(&(envelope.ip_address, envelope.port)) {
-            Some(peer_state) => peer_state,
-            None => return Box::pin(ready(())),
-        };
-
-        for msg in envelope.msgs.into_iter() {
-            match msg {
-                CommanderMsg::PeerChange { peer_change } => {
-                    peer_state.change(peer_change);
-                }
-                _ => (),
+                vec![]
             }
         }
-
-        let peer_command = peer_state.peer_command();
-
-        Box::pin(
-            self.coordinator_addr
-                .send(CommandSet {
-                    peer_control: vec![PeerControlEnvelope {
-                        ip_address: peer_state.ip_address,
-                        port: peer_state.port,
-                        messages: peer_command.peer_control,
-                    }],
-                    peer_control_global: peer_command.peer_control_global,
-                    complete_pieces: peer_command.complete_pieces,
-                    piece_requests_to_us: peer_command.piece_requests_to_us,
-                    peer_change: vec![],
-                })
-                .into_actor(self)
-                .map(|result, _, _| {
-                    if let Err(err) = result {
-                        error!("Error sending PeerControlEnvelope: {}", err);
-                    }
-                }),
-        )
     }
 }

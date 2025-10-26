@@ -1,10 +1,10 @@
 use actix::prelude::*;
 
+use crate::bittorrent::Metadata;
 use crate::coordinator::Coordinator;
 use crate::coordinator::TrackerUpdate;
 use crate::filer::Filer;
 use crate::filer::PieceFile;
-use crate::bittorrent::Metadata;
 use crate::tracker::{AskTracker, Tracker, TrackerError};
 use tokio::io;
 

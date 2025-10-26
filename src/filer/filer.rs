@@ -4,9 +4,9 @@ use actix::prelude::*;
 use log::debug;
 use tokio::io;
 
+use crate::bittorrent::BittorrentMessage;
+
 use super::PieceFile;
-use crate::commander::CommandSet;
-use crate::peer::{PeerControl, PeerControlEnvelope};
 
 pub struct Filer {
     piece_file: PieceFile,
@@ -48,8 +48,8 @@ impl Handler<WholePiece> for Filer {
 }
 
 #[derive(Message)]
-#[rtype(result = "Result<CommandSet, io::Error>")]
-pub struct RequestPieceEnvelope {
+#[rtype(result = "Result<Vec<(Ipv4Addr, u16, BittorrentMessage)>, io::Error>")]
+pub struct RequestPieces {
     pub request_pieces: Vec<RequestPiece>,
 }
 
@@ -62,57 +62,36 @@ pub struct RequestPiece {
     pub length: u32,
 }
 
-impl Handler<RequestPieceEnvelope> for Filer {
-    type Result = ResponseActFuture<Self, Result<CommandSet, io::Error>>;
+impl Handler<RequestPieces> for Filer {
+    type Result =
+        ResponseActFuture<Self, Result<Vec<(Ipv4Addr, u16, BittorrentMessage)>, io::Error>>;
 
-    fn handle(&mut self, msg: RequestPieceEnvelope, _ctx: &mut Context<Self>) -> Self::Result {
+    fn handle(&mut self, msg: RequestPieces, _ctx: &mut Context<Self>) -> Self::Result {
         let mut piece_file = self.piece_file.clone();
 
-        return Box::pin(
+        Box::pin(
             async move {
-                let mut command_set = CommandSet::default();
-                for request_piece in msg.request_pieces.into_iter() {
-                    match piece_file
-                        .read(
-                            request_piece.index,
-                            request_piece.begin,
-                            request_piece.length,
-                        )
+                let mut messages = Vec::new();
+                for request in msg.request_pieces.into_iter() {
+                    if let Some(block) = piece_file
+                        .read(request.index, request.begin, request.length)
                         .await?
                     {
-                        Some(block) => {
-                            command_set.peer_control.push(PeerControlEnvelope {
-                                ip_address: request_piece.ip_address,
-                                port: request_piece.port,
-                                messages: vec![PeerControl::UploadPieceToThem {
-                                    index: request_piece.index,
-                                    begin: request_piece.begin,
-                                    block,
-                                }],
-                            });
-                        }
-                        None => {}
+                        messages.push((
+                            request.ip_address,
+                            request.port,
+                            BittorrentMessage::Piece {
+                                index: request.index,
+                                begin: request.begin,
+                                block,
+                            },
+                        ));
                     }
                 }
 
-                Ok(command_set)
+                Ok(messages)
             }
             .into_actor(self),
-        );
+        )
     }
-}
-
-struct ReadPiece {
-    index: u32,
-    offset: u32,
-    length: u32,
-}
-
-struct WritePiece {
-    index: u32,
-    data: Vec<u8>,
-}
-
-struct WritePieceDone {
-    index: u32,
 }

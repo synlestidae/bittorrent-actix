@@ -4,14 +4,14 @@ use std::{
     ops::Add,
 };
 
-use crate::bittorrent::BittorrentMessage;
-use crate::coordinator::PeerControlGlobal;
-use crate::filer::RequestPiece;
-use crate::bittorrent::{CompletePiece, Info, Piece, PieceRequest};
-use crate::peer::PeerControl;
 use super::piece_tracker::PieceTracker;
+use crate::bittorrent::{Info, PieceRequest};
+use crate::{
+    bittorrent::{BittorrentMessage, Piece},
+    commander::Command,
+    filer::WholePiece,
+};
 use bitvec::{order::Msb0, vec::BitVec};
-use log::{debug, trace};
 
 const MAX_PIECE_REQUESTS: usize = 20;
 
@@ -28,10 +28,8 @@ pub struct PeerState {
     us_interested: bool,
     assigned_pieces: Vec<u32>,
     piece_tracker: PieceTracker,
+    outgoing_messages: Vec<BittorrentMessage>,
     piece_requests_from_them: Vec<PieceRequest>,
-    piece_haves_from_them: Vec<u32>,
-    haves_to_send: Vec<u32>,
-    changes: Vec<PeerChange>,
 }
 
 impl PeerState {
@@ -48,13 +46,11 @@ impl PeerState {
             them_interested: false,
             us_choking: true,
             us_interested: false,
+            bitfield_sent: false,
             assigned_pieces: Vec::new(),
             piece_tracker: PieceTracker::new(info),
-            bitfield_sent: false,
+            outgoing_messages: Vec::new(),
             piece_requests_from_them: Vec::new(),
-            piece_haves_from_them: Vec::new(),
-            haves_to_send: Vec::new(),
-            changes: Vec::new(),
         }
     }
 
@@ -70,155 +66,166 @@ impl PeerState {
     }
 
     pub fn change(&mut self, change: PeerChange) {
-        self.changes.push(change);
-    }
-
-    fn apply_changes(&mut self) {
-        for change in self.changes.drain(..).into_iter() {
-            if let Some(bitfield) = change.bitfield {
-                // TODO check the bounds
-                self.they_have = bitfield;
-            }
-
-            if let Some(them_choking) = change.choking {
-                self.them_choking = them_choking;
-            }
-
-            if let Some(them_interested) = change.interested {
-                self.them_interested = them_interested;
-            }
-
-            for piece_index in change.pieces_completed_from_other_peers.into_iter() {
-                // Hate the BitVec crate
-                let idx = piece_index as usize;
-                if idx < self.we_have.len() {
-                    if !self.we_have[idx] {
-                        self.haves_to_send.push(piece_index);
-                    }
-                    self.we_have.get_mut(idx).map(|mut b| b.set(true));
-                }
-            }
-
-            for piece in change.pieces_received_from_them.into_iter() {
-                self.piece_tracker.add_piece(piece);
-            }
-
-            for piece_index in change.pieces_requested {
-                self.piece_requests_from_them.push(piece_index);
-            }
-
-            for piece_index in change.pieces_they_have {
-                self.piece_haves_from_them.push(piece_index);
-            }
+        match change {
+            PeerChange::RecvMessage { message } => self.apply_message(message),
+            PeerChange::PieceComplete { piece_index } => self.apply_piece_complete(piece_index),
         }
     }
 
-    pub fn peer_command(&mut self) -> PeerCommand {
-        self.apply_changes();
+    fn apply_message(&mut self, msg: BittorrentMessage) {
+        match msg {
+            BittorrentMessage::Choke => self.them_choking = true,
+            BittorrentMessage::Unchoke => self.them_choking = false,
+            BittorrentMessage::Interested => self.them_interested = true,
+            BittorrentMessage::NotInterested => self.them_interested = false,
+            BittorrentMessage::Have { piece_index } => {
+                match self.they_have.get_mut(piece_index as usize) {
+                    Some(mut bit) => *bit = true,
+                    None => (),
+                }
+            }
+            BittorrentMessage::Bitfield { bitfield } => {
+                self.they_have = BitVec::from_vec(bitfield);
+            }
+            BittorrentMessage::Piece {
+                index,
+                begin,
+                block,
+            } => {
+                self.piece_tracker.add_piece(Piece {
+                    index,
+                    begin,
+                    block,
+                });
+            }
+            BittorrentMessage::KeepAlive => (),
+            BittorrentMessage::Request {
+                index,
+                begin,
+                length,
+            } => {
+                self.piece_requests_from_them.push(PieceRequest {
+                    index,
+                    begin,
+                    length,
+                });
+            }
+            BittorrentMessage::Cancel { .. } => (),
+            BittorrentMessage::Port { .. } => (),
+        }
+    }
 
+    fn apply_piece_complete(&mut self, piece_index: u32) {
+        match self.we_have.get_mut(piece_index as usize) {
+            Some(mut have_piece) => {
+                if !*have_piece {
+                    self.outgoing_messages
+                        .push(BittorrentMessage::Have { piece_index });
+                }
+                *have_piece = true;
+            }
+            None => (),
+        }
+    }
+
+    pub fn commands(&mut self) -> Vec<Command> {
         let ip_address = self.ip_address;
         let port = self.port;
 
-        let mut peer_control = Vec::new();
-        let mut piece_requests_to_us = Vec::new();
-        let mut peer_control_global = Vec::new();
+        let mut commands = Vec::new();
 
         if !self.bitfield_sent {
             let bitfield = self.we_have.clone().into_vec();
-            trace!("Sending bitfield to {}:{} {:?}", ip_address, port, bitfield,);
-            peer_control.push(PeerControl::Bitfield { bitfield });
+            commands.push(Command::SendPeerMessage {
+                ip_address,
+                port,
+                message: BittorrentMessage::Bitfield { bitfield },
+            });
             self.bitfield_sent = true;
         }
 
         if self.us_choking {
-            trace!("Unchoking {}:{}", ip_address, port);
-            peer_control.push(PeerControl::UnchokeThem);
+            commands.push(Command::SendPeerMessage {
+                ip_address,
+                port,
+                message: BittorrentMessage::Unchoke,
+            });
             self.us_choking = false;
         }
 
         if !self.us_interested {
-            trace!("Telling {}:{} we're interested", ip_address, port);
-            peer_control.push(PeerControl::Interested);
             self.us_interested = true;
+            commands.push(Command::SendPeerMessage {
+                ip_address,
+                port,
+                message: BittorrentMessage::Interested,
+            });
         }
 
-        if self.assigned_pieces.is_empty() {
-            let len = self.info.num_pieces();
-            self.we_have.resize(len, false);
-            self.they_have.resize(len, false);
-
-            let assigned_pieces: Vec<u32> = self.they_have.iter_ones().map(|i| i as u32).collect();
-
-            if !assigned_pieces.is_empty() {
-                trace!("Assigning pieces to download from {}:{}", ip_address, port);
-                if !assigned_pieces.is_empty() {
-                    self.set_piece_assignment(assigned_pieces.to_vec());
-                }
-            }
-        }
+        // Commander needs to assign pieces
+        // TODO make sure commander handles piece assignments
 
         // complete any pieces
         let complete_pieces = self.piece_tracker.complete_pieces();
-        let mut correct_pieces = Vec::new();
-        if !complete_pieces.is_empty() {
-            debug!("{} complete piece(s)", complete_pieces.len());
-        }
         for complete_piece in complete_pieces.into_iter() {
-            debug!("Piece {} is complete", complete_piece.index);
             self.piece_tracker.remove(complete_piece.index);
 
             if self
                 .info
                 .piece_correct(complete_piece.index, &complete_piece.data)
             {
-                trace!("Piece {} is correct", complete_piece.index);
-                self.piece_tracker.mark_complete(complete_piece.index);
-                self.haves_to_send.push(complete_piece.index);
-                correct_pieces.push(complete_piece);
-            } else {
-                trace!("Piece {} is incorrect", complete_piece.index);
-            }
-        }
-        correct_pieces.iter().for_each(|piece| {
-            peer_control_global.push(PeerControlGlobal::HavePiece {
-                piece_index: piece.index,
-            });
-        });
-
-        // send Have for every piece that another peer gave us
-        for index in self.haves_to_send.drain(..) {
-            peer_control.push(PeerControl::HavePiece { index });
-        }
-
-        // get next piece requests to them
-        if !self.them_choking {
-            let piece_requests = self
-                .piece_tracker
-                .next_pieces(&self.assigned_pieces, MAX_PIECE_REQUESTS);
-            if !piece_requests.is_empty() {
-                peer_control.push(PeerControl::RequestPieces { piece_requests });
-            }
-        }
-
-        // piece requests to US
-        if !self.us_choking {
-            for piece_request in self.piece_requests_from_them.drain(..) {
-                piece_requests_to_us.push(RequestPiece {
+                commands.push(Command::WholePiece {
                     ip_address,
                     port,
-                    index: piece_request.index,
-                    begin: piece_request.begin,
-                    length: piece_request.length,
+                    whole_piece: WholePiece {
+                        index: complete_piece.index,
+                        data: complete_piece.data,
+                    },
                 });
             }
         }
 
-        PeerCommand {
-            peer_control,
-            peer_control_global,
-            complete_pieces: correct_pieces,
-            piece_requests_to_us,
+        // request them for pieces
+        if !self.them_choking {
+            let piece_requests = self
+                .piece_tracker
+                .next_pieces(&self.assigned_pieces, MAX_PIECE_REQUESTS);
+
+            for piece_request in piece_requests.into_iter() {
+                commands.push(Command::SendPeerMessage {
+                    ip_address,
+                    port,
+                    message: BittorrentMessage::Request {
+                        index: piece_request.index,
+                        begin: piece_request.begin,
+                        length: piece_request.length,
+                    },
+                });
+            }
         }
+
+        // handle pieces they request from us
+        if !self.us_choking {
+            for request in self.piece_requests_from_them.drain(..) {
+                commands.push(Command::PieceRequestFromThem {
+                    ip_address,
+                    port,
+                    request,
+                });
+            }
+        } else {
+            self.piece_requests_from_them.retain(|_| false);
+        }
+
+        for message in self.outgoing_messages.drain(..) {
+            commands.push(Command::SendPeerMessage {
+                ip_address: self.ip_address,
+                port: self.port,
+                message,
+            });
+        }
+
+        commands
     }
 
     pub fn completion_stats(&self) -> CompletionStats {
@@ -266,59 +273,10 @@ impl Add for CompletionStats {
     }
 }
 
-#[derive(Debug, Default)]
-pub struct PeerChange {
-    pub choking: Option<bool>,
-    pub interested: Option<bool>,
-    pub bitfield: Option<BitVec<u8, Msb0>>,
-    pub pieces_completed_from_other_peers: HashSet<u32>,
-    pub pieces_received_from_them: Vec<Piece>,
-    pub pieces_they_have: Vec<u32>,
-    pub pieces_requested: Vec<PieceRequest>,
-}
-
-impl PeerChange {
-    pub fn handle_message(&mut self, msg: BittorrentMessage) {
-        match msg {
-            BittorrentMessage::Choke => self.choking = Some(true),
-            BittorrentMessage::Unchoke => self.choking = Some(false),
-            BittorrentMessage::Interested => self.interested = Some(true),
-            BittorrentMessage::NotInterested => self.interested = Some(false),
-            BittorrentMessage::Have { piece_index } => self.pieces_they_have.push(piece_index),
-            BittorrentMessage::Bitfield { bitfield } => {
-                self.bitfield = Some(BitVec::from_vec(bitfield))
-            }
-            BittorrentMessage::Piece {
-                index,
-                begin,
-                block,
-            } => self.pieces_received_from_them.push(Piece {
-                index,
-                begin,
-                block,
-            }),
-            BittorrentMessage::KeepAlive => (),
-            BittorrentMessage::Request {
-                index,
-                begin,
-                length,
-            } => self.pieces_requested.push(PieceRequest {
-                index,
-                begin,
-                length,
-            }),
-            BittorrentMessage::Cancel { .. } => (),
-            BittorrentMessage::Port { .. } => (),
-        }
-    }
-}
-
-#[derive(Debug, Default, PartialEq, Eq)]
-pub struct PeerCommand {
-    pub peer_control: Vec<PeerControl>,
-    pub peer_control_global: Vec<PeerControlGlobal>,
-    pub complete_pieces: Vec<CompletePiece>,
-    pub piece_requests_to_us: Vec<RequestPiece>,
+#[derive(Debug)]
+pub enum PeerChange {
+    RecvMessage { message: BittorrentMessage },
+    PieceComplete { piece_index: u32 },
 }
 
 #[cfg(test)]
@@ -335,7 +293,7 @@ mod test {
         coordinator::PeerControlGlobal,
         metadata::{CompletePiece, Info, ModeFile, PieceRequest},
         peer::{BittorrentMessage, PeerControl},
-        peer_state::{PeerChange, PeerCommand, PeerState},
+        peer_state::{PeerChange, PeerState},
     };
 
     #[ctor]
