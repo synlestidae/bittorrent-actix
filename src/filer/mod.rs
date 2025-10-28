@@ -1,7 +1,7 @@
 mod file_pool;
+mod file_writer;
 mod filer;
 mod piece_file;
-mod piece_stream;
 
 pub use file_pool::FilePool;
 pub use filer::{Filer, RequestPiece, RequestPieces, WholePiece};

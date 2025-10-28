@@ -28,7 +28,7 @@ impl PieceFile {
         Ok(Self {
             file_pool,
             index: Arc::new(Mutex::new(BTreeMap::new())),
-            highest_piece: -1
+            highest_piece: -1,
         })
     }
 
