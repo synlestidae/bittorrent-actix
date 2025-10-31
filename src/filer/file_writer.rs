@@ -1,9 +1,9 @@
 use crate::bittorrent::{Info, Metadata, ModeFile};
 use crate::filer::PieceFile;
-use tokio::io::AsyncWriteExt;
-use tokio::fs::{create_dir_all, File as FsFile};
-use tokio::io::Error;
 use std::cmp::min;
+use tokio::fs::{File as FsFile, create_dir_all};
+use tokio::io::AsyncWriteExt;
+use tokio::io::Error;
 
 const BUFFER_SIZE: usize = 1 << 16;
 
@@ -86,7 +86,13 @@ impl FileWriter {
                 .collect(),
         };
 
-        Self { files, piece_file, piece_index: 0, offset: 0, info: metadata.info }
+        Self {
+            files,
+            piece_file,
+            piece_index: 0,
+            offset: 0,
+            info: metadata.info,
+        }
     }
 
     async fn write_to_disk(&mut self) -> Result<(), FileWriterError> {
@@ -115,13 +121,16 @@ impl FileWriter {
                 }
                 let length = min(file_size - bytes_written, piece_length - offset);
 
-                let block = self.piece_file.read(piece_index, offset as u32, length).await?.ok_or(FileWriterError::PieceNotFound { piece_index })?;
+                let block = self
+                    .piece_file
+                    .read(piece_index, offset as u32, length)
+                    .await?
+                    .ok_or(FileWriterError::PieceNotFound { piece_index })?;
                 writer.write_all(&block).await?;
 
                 bytes_written += length;
                 offset += length;
             }
-
         }
 
         Ok(())

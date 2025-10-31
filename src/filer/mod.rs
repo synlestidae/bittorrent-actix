@@ -2,6 +2,7 @@ mod file_pool;
 mod file_writer;
 mod filer;
 mod piece_file;
+mod piece_reader;
 
 pub use file_pool::FilePool;
 pub use filer::{Filer, RequestPiece, RequestPieces, WholePiece};
