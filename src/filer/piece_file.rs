@@ -67,7 +67,7 @@ impl PieceFile {
                 "Adding existing piece {} at position {}",
                 piece_index, position
             );
-            if piece_index > self.highest_piece {
+            if piece_index as i32 > self.highest_piece {
                 self.highest_piece = piece_index as i32;
             }
             index.insert(piece_index, position);
@@ -125,35 +125,6 @@ impl PieceFile {
         })
     }
 
-    /*pub fn read_whole_piece(
-        &mut self,
-        piece_index: u32,
-    ) -> impl Future<Output = Result<Option<Vec<u8>>, io::Error>> {
-        let index_arc = self.index.clone();
-        let mut file_pool = self.file_pool.clone();
-
-        Box::pin(async move {
-            let index = index_arc.lock().await;
-            let position = match index.get(&piece_index) {
-                Some(i) => i,
-                None => return Ok(None),
-            };
-            let mut handle = file_pool.reader().await?;
-
-            handle.seek(std::io::SeekFrom::Start(*position)).await?;
-
-            let piece_length = handle.read_u32().await? - 9; // 9 = 1 + 2*4 = len + index + begin 
-                                                            
-            let mut buf = vec![0u8; piece_length as usize];
-            handle
-                .seek(std::io::SeekFrom::Current(5)) // 1 + 5 = id + len
-                .await?;
-            handle.read_exact(&mut buf).await?;
-
-            return Ok(Some(buf));
-        })
-    }*/
-
     pub fn write(
         &mut self,
         piece_index: u32,
@@ -180,13 +151,17 @@ impl PieceFile {
             Ok(())
         })
     }
+
+    pub fn highest_piece(&self) -> i32 {
+        self.highest_piece
+    }
 }
 
 #[cfg(test)]
 mod test {
     use tokio;
 
-    use crate::piece_file::PieceFile;
+    use crate::filer::PieceFile;
 
     #[tokio::test]
     pub async fn test_read_no_piece() {

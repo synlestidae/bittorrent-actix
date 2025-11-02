@@ -48,7 +48,7 @@ impl Handler<InitDownload> for Init {
     fn handle(&mut self, _msg: InitDownload, _ctx: &mut Context<Self>) -> Self::Result {
         debug!("Received InitDownload");
         let info_hash = self.info_hash.clone();
-        let info = self.metadata.info.clone();
+        let metadata = self.metadata.clone();
         let tracker_addr = self.tracker_addr.clone();
         let piece_file = self.piece_file.clone();
 
@@ -60,7 +60,8 @@ impl Handler<InitDownload> for Init {
                     Err(_) => unreachable!("Should not fail to send message on startup"),
                 };
 
-                let filer_addr = Filer::new(piece_file).await?.start();
+                let info = metadata.info.clone();
+                let filer_addr = Filer::new(metadata.clone(), piece_file).await?.start();
                 let coordinator_addr = Coordinator::create(|ctx| {
                     Coordinator::new(info, info_hash, filer_addr.clone(), ctx)
                 });

@@ -1,24 +1,11 @@
 use crate::bittorrent::{Info, Metadata, ModeFile};
-use crate::filer::PieceFile;
+use crate::filer::piece_reader::PieceReader;
 use std::cmp::min;
-use tokio::fs::{File as FsFile, create_dir_all};
-use tokio::io::AsyncWriteExt;
+use tokio::fs::OpenOptions;
 use tokio::io::Error;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 
 const BUFFER_SIZE: usize = 1 << 16;
-
-// You have all the files and their lengths. When you've filled a file,
-// get the next file. When there are no more files, you are done.
-//
-// If some files remain at completion, it is an error.
-// If there is one piece remaining, it is an error.
-// If there is one or more piece to analyse, it is an error.
-// Otherwise, succes.
-//
-// If the file has an md5sum, and sum isn't correct, we can consider all of the pieces
-// in that range to be corrupted, and drop them. This is a bit complicated though, some
-// just report the bad file and bad pieces and move on. Mind you, it is a good way to check
-// I wrote the code correctly.
 
 struct File {
     directory: String,
@@ -28,7 +15,7 @@ struct File {
 
 pub struct FileWriter {
     files: Vec<File>,
-    piece_file: PieceFile,
+    src: PieceReader,
     piece_index: u32,
     offset: usize,
     info: Info,
@@ -37,6 +24,8 @@ pub struct FileWriter {
 pub enum FileWriterError {
     Io { error: Error },
     PieceNotFound { piece_index: u32 },
+    UnexpectedEndOfPieces,
+    UnexpectedEndOfData,
 }
 
 impl From<Error> for FileWriterError {
@@ -46,7 +35,7 @@ impl From<Error> for FileWriterError {
 }
 
 impl FileWriter {
-    pub fn new(metadata: Metadata, piece_file: PieceFile) -> Self {
+    pub fn new(metadata: Metadata, src: PieceReader) -> Self {
         let files = match &metadata.info.file_info {
             ModeFile::Single { length } => {
                 let path =
@@ -88,48 +77,40 @@ impl FileWriter {
 
         Self {
             files,
-            piece_file,
+            src,
             piece_index: 0,
             offset: 0,
             info: metadata.info,
         }
     }
 
-    async fn write_to_disk(&mut self) -> Result<(), FileWriterError> {
-        let mut piece_index = 0;
-        let mut offset: u32 = 0;
+    pub async fn write_to_disk(&mut self) -> Result<(), FileWriterError> {
+        const BUFFER_SIZE: usize = 1 << 16;
+        let mut buffer = vec![0b0; BUFFER_SIZE];
 
         for file in self.files.iter() {
-            let file_size = file.size as u32;
-            let mut piece_length = self.info.piece_length(piece_index);
-
-            create_dir_all(&file.directory).await?;
-
-            let mut writer = FsFile::options()
-                .read(false)
+            let mut bytes_remaining = file.size;
+            let mut file_out = OpenOptions::new()
                 .write(true)
-                .create(true)
+                .truncate(true)
                 .open(&file.path)
                 .await?;
 
-            let mut bytes_written = 0;
-            while bytes_written < file_size {
-                if offset >= piece_length {
-                    piece_index += 1;
-                    offset = 0;
-                    piece_length = self.info.piece_length(piece_index);
+            while bytes_remaining > 0 {
+                let length = min(bytes_remaining, buffer.len());
+                let mut buf = &mut buffer[0..length];
+
+                let bytes_read = match self.src.read(&mut buf).await? {
+                    Some(b) => b,
+                    None => return Err(FileWriterError::UnexpectedEndOfPieces),
+                };
+                if bytes_read == 0 {
+                    return Err(FileWriterError::UnexpectedEndOfData);
                 }
-                let length = min(file_size - bytes_written, piece_length - offset);
 
-                let block = self
-                    .piece_file
-                    .read(piece_index, offset as u32, length)
-                    .await?
-                    .ok_or(FileWriterError::PieceNotFound { piece_index })?;
-                writer.write_all(&block).await?;
+                file_out.write_all(&buf[0..bytes_read]).await?;
 
-                bytes_written += length;
-                offset += length;
+                bytes_remaining -= bytes_read;
             }
         }
 

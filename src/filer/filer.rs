@@ -1,21 +1,44 @@
+use core::error;
 use std::net::Ipv4Addr;
 
 use actix::prelude::*;
-use log::debug;
+use log::{debug, error};
 use tokio::io;
 
-use crate::bittorrent::{BittorrentMessage, Info};
+use crate::{
+    bittorrent::{BittorrentMessage, Info, Metadata},
+    filer::{
+        file_writer::{self, FileWriter, FileWriterError},
+        piece_file,
+        piece_reader::{self, PieceReader},
+    },
+};
 
 use super::PieceFile;
 
 pub struct Filer {
-    info: Info,
     piece_file: PieceFile,
+    metadata: Metadata,
 }
 
 impl Filer {
-    pub async fn new(info: Info, piece_file: PieceFile) -> Result<Self, io::Error> {
-        Ok(Self { info, piece_file })
+    pub async fn new(metadata: Metadata, piece_file: PieceFile) -> Result<Self, io::Error> {
+        Ok(Self {
+            metadata,
+            piece_file,
+        })
+    }
+
+    fn schedule_file_writer(&self, ctx: &mut <Self as Actor>::Context) {
+        let piece_reader = PieceReader::new(self.piece_file.clone());
+        let mut file_writer = FileWriter::new(self.metadata.clone(), piece_reader);
+
+        ctx.spawn(Box::pin(
+            async move {
+                file_writer.write_to_disk();
+            }
+            .into_actor(self),
+        ));
     }
 }
 
@@ -24,14 +47,18 @@ impl Actor for Filer {
 }
 
 #[derive(Message)]
-#[rtype(result = "Result<(), io::Error>")]
+#[rtype(result = "Result<PieceReport, io::Error>")]
 pub struct WholePiece {
     pub index: u32,
     pub data: Vec<u8>,
 }
 
+pub struct PieceReport {
+    pub highest_piece: i32,
+}
+
 impl Handler<WholePiece> for Filer {
-    type Result = ResponseActFuture<Self, Result<(), io::Error>>;
+    type Result = ResponseActFuture<Self, Result<PieceReport, io::Error>>;
 
     fn handle(&mut self, msg: WholePiece, _ctx: &mut Context<Self>) -> Self::Result {
         debug!("Received WholePiece index={}", msg.index);
@@ -39,11 +66,20 @@ impl Handler<WholePiece> for Filer {
 
         return Box::pin(
             async move {
-                piece_file.write(msg.index, msg.data).await?;
+                piece_file.write(msg.index, msg.data).await.unwrap();
 
                 Ok(())
             }
-            .into_actor(self),
+            .into_actor(self)
+            .map(|result: Result<(), _>, actor, _ctx| {
+                if let Err(err) = result {
+                    return Err(err);
+                }
+
+                Ok(PieceReport {
+                    highest_piece: actor.piece_file.highest_piece(),
+                })
+            }),
         );
     }
 }
@@ -91,6 +127,31 @@ impl Handler<RequestPieces> for Filer {
                 }
 
                 Ok(messages)
+            }
+            .into_actor(self),
+        )
+    }
+}
+
+#[derive(Message)]
+#[rtype(result = "Result<(), FileWriterError>")]
+pub struct Finish {}
+
+impl Handler<Finish> for Filer {
+    type Result = ResponseActFuture<Self, Result<(), FileWriterError>>;
+
+    fn handle(&mut self, _msg: Finish, _ctx: &mut Context<Self>) -> Self::Result {
+        let metadata = self.metadata.clone();
+        let piece_file = self.piece_file.clone();
+
+        Box::pin(
+            async {
+                let piece_reader = PieceReader::new(piece_file);
+                let mut file_writer = FileWriter::new(metadata, piece_reader);
+
+                file_writer.write_to_disk().await?;
+
+                Ok(())
             }
             .into_actor(self),
         )

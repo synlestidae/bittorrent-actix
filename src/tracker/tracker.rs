@@ -1,9 +1,12 @@
 use crate::bittorrent::Bencoding;
 use crate::bittorrent::Metadata;
+use crate::tracker::uri::ParseErr;
+use crate::tracker::uri::Uri;
 use actix::prelude::*;
 use log::{debug, error};
 use percent_encoding::{NON_ALPHANUMERIC, percent_encode};
 use rand::RngCore;
+use std::string::ParseError;
 use std::{
     io::{BufReader, Cursor},
     net::{Ipv4Addr, Ipv6Addr},
@@ -25,43 +28,12 @@ impl Tracker {
             peer_id: None,
         }
     }
-}
 
-impl Actor for Tracker {
-    type Context = Context<Self>;
-}
-
-#[derive(Message)]
-#[rtype(result = "Result<TrackerResponse, TrackerError>")]
-pub struct AskTracker {}
-
-pub enum TrackerError {
-    HttpError(ureq::Error),
-    InvalidStatus(StatusCode),
-}
-
-#[derive(Debug)]
-pub struct TrackerResponse {
-    pub interval: Option<u32>,
-    pub min_interval: Option<u32>,
-    pub complete: Option<u32>,
-    pub incomplete: Option<u32>,
-    pub downloaded: Option<u32>,
-    pub peers: Vec<(Ipv4Addr, u16)>,
-    pub peers6: Vec<(Ipv6Addr, u16)>,
-    pub failure_reason: Option<String>,
-}
-
-impl From<ureq::Error> for TrackerError {
-    fn from(err: ureq::Error) -> Self {
-        TrackerError::HttpError(err)
-    }
-}
-
-impl Handler<AskTracker> for Tracker {
-    type Result = Result<TrackerResponse, TrackerError>;
-
-    fn handle(&mut self, _msg: AskTracker, ctx: &mut Context<Self>) -> Self::Result {
+    fn ask_http(
+        &mut self,
+        _uri: Uri,
+        _ctx: &mut Context<Self>,
+    ) -> Result<HttpTrackerResponse, TrackerError> {
         // Build the URL for GET request
         let mut url = self.metadata.announce.clone();
         let left = self.metadata.total_file_bytes();
@@ -109,9 +81,61 @@ impl Handler<AskTracker> for Tracker {
 
         Ok(tracker_response)
     }
+
+    fn ask_udp(
+        &mut self,
+        uri: Uri,
+        _ctx: &mut Context<Self>,
+    ) -> Result<HttpTrackerResponse, TrackerError> {
+        unimplemented!()
+    }
 }
 
-fn parse_tracker_response(body: Bencoding) -> Result<TrackerResponse, TrackerError> {
+impl Actor for Tracker {
+    type Context = Context<Self>;
+}
+
+#[derive(Message)]
+#[rtype(result = "Result<HttpTrackerResponse, TrackerError>")]
+pub struct AskTracker {}
+
+pub enum TrackerError {
+    HttpError(ureq::Error),
+    InvalidStatus(StatusCode),
+    InvalidUri,
+    InvalidUriScheme,
+}
+
+impl From<ureq::Error> for TrackerError {
+    fn from(err: ureq::Error) -> Self {
+        TrackerError::HttpError(err)
+    }
+}
+
+impl From<ParseErr> for TrackerError {
+    fn from(_err: ParseErr) -> Self {
+        TrackerError::InvalidUri
+    }
+}
+
+impl Handler<AskTracker> for Tracker {
+    type Result = Result<HttpTrackerResponse, TrackerError>;
+
+    fn handle(&mut self, _msg: AskTracker, ctx: &mut Context<Self>) -> Self::Result {
+        let uri = Uri::parse(&self.metadata.announce)?;
+
+        if uri.scheme == "https" {
+            return self.ask_http(uri, ctx);
+        }
+        if uri.scheme == "udp" {
+            return self.ask_udp(uri, ctx);
+        }
+
+        return Err(TrackerError::InvalidUriScheme);
+    }
+}
+
+fn parse_tracker_response(body: Bencoding) -> Result<HttpTrackerResponse, TrackerError> {
     match body {
         Bencoding::Dictionary { dictionary, .. } => {
             let interval = match dictionary.get("interval".as_bytes()) {
@@ -180,4 +204,16 @@ fn parse_tracker_response(body: Bencoding) -> Result<TrackerResponse, TrackerErr
         }
         _ => unimplemented!(),
     }
+}
+
+#[derive(Debug)]
+pub struct HttpTrackerResponse {
+    pub interval: Option<u32>,
+    pub min_interval: Option<u32>,
+    pub complete: Option<u32>,
+    pub incomplete: Option<u32>,
+    pub downloaded: Option<u32>,
+    pub peers: Vec<(Ipv4Addr, u16)>,
+    pub peers6: Vec<(Ipv6Addr, u16)>,
+    pub failure_reason: Option<String>,
 }

@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use super::bencoding::{Bencoding, Position};
 use log::{debug, error};
 use sha1::{Digest, Sha1};

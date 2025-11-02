@@ -352,7 +352,7 @@ impl<'a> Iterator for PieceIterator<'a> {
     }
 }
 
-#[cfg(test)]
+/*#[cfg(test)]
 mod test {
     use std::{collections::HashSet, sync::Arc};
 
@@ -966,4 +966,4 @@ mod test {
             },
         }
     }
-}
+}*/

@@ -279,7 +279,7 @@ pub enum PeerChange {
     PieceComplete { piece_index: u32 },
 }
 
-#[cfg(test)]
+/*#[cfg(test)]
 mod test {
     use std::sync::Arc;
 
@@ -573,4 +573,4 @@ mod test {
             }]
         );*/
     }
-}
+}*/

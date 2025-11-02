@@ -12,7 +12,6 @@ use tokio::time::timeout;
 use crate::bittorrent::{BittorrentMessage, Info};
 use crate::filer::{Filer, RequestPiece, RequestPieces, WholePiece};
 use crate::peer::{Peer, PeerError, SendMessages};
-use crate::tracker::TrackerResponse;
 
 use crate::commander::Command;
 use crate::commander::Commander;

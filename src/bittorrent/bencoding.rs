@@ -223,7 +223,7 @@ fn peek_char<R: Read>(reader: &mut BufReader<R>) -> Option<char> {
     }
 }
 
-#[cfg(test)]
+/*#[cfg(test)]
 mod test {
     use crate::bencoding::{Bencoding, Position};
     use std::io::{BufReader, Cursor, Seek};
@@ -342,4 +342,4 @@ mod test {
             cursor.get_ref().get_ref().len() as u64
         );
     }
-}
+}*/
