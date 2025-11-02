@@ -1,10 +1,9 @@
 use std::{
     io::{self, Cursor},
-    net::Ipv4Addr,
+    net::Ipv4Addr, time::Duration,
 };
 use std::io::Read;
 use std::io::Write;
-pub use tokio::io::Error;
 pub use tokio::net::UdpSocket;
 
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
@@ -13,34 +12,56 @@ pub struct UdpClient {
     host: String,
     port: u16,
     socket: UdpSocket,
+    timeout: Duration,
+}
+
+pub enum UdpClientErr {
+    Io(io::Error),
+    ParseErr(ParseErr),
+}
+
+impl From<io::Error> for UdpClientErr {
+    fn from(err: io::Error) -> Self {
+        Self::Io(err)
+    }
+}
+
+impl From<ParseErr> for UdpClientErr {
+    fn from(err: ParseErr) -> Self {
+        Self::ParseErr(err)
+    }
 }
 
 impl UdpClient {
-    pub async fn connect(host: &str, port: u16) -> Result<Self, Error> {
-        let socket = UdpSocket::bind("0.0.0.0:0").await.unwrap();
+    pub async fn connect(host: &str, port: u16) -> Result<Self, UdpClientErr> {
+        let socket = UdpSocket::bind("0.0.0.0:0").await?;
         socket.connect((host, port));
+
+        let timeout = Duration::from_secs(30);
 
         Ok(Self {
             host: host.to_owned(),
             port,
             socket,
+            timeout
         })
     }
 
-    pub async fn send_connect(&self, req: ConnectReq) -> Result<(), Error> {
-        unimplemented!()
+    pub async fn send<M: UdpMessage>(&self, message: M) -> Result<(), UdpClientErr> {
+        let data: Vec<u8> = message.serialize();
+
+        self.socket.send(&data).await?;
+
+        Ok(())
     }
 
-    pub async fn send_announce(&self, req: AnnounceReq) -> Result<(), Error> {
-        unimplemented!()
-    }
+    pub async fn recv<M: UdpMessage>(&self) -> Result<M, UdpClientErr> {
+        let mut buffer = vec![0u8; M::buffer_len()];
 
-    pub async fn recv_connect(&self) -> Result<ConnectRes, Error> {
-        unimplemented!()
-    }
-
-    pub async fn recv_announce(&self) -> Result<AnnounceRes, Error> {
-        unimplemented!()
+        self.socket.recv(&mut buffer).await?;
+        
+        let message: M = M::deserialise(&buffer)?;
+        Ok(message)
     }
 }
 
@@ -55,6 +76,12 @@ impl From<io::Error> for ParseErr {
     }
 }
 
+trait UdpMessage: Sized {
+    fn serialize(&self) -> Vec<u8>;
+    fn deserialise(data: &[u8]) -> Result<Self, ParseErr>;
+    fn buffer_len() -> usize;
+}
+
 /// Offset  Size            Name            Value
 /// 0       64-bit integer  protocol_id     0x41727101980 // magic constant
 /// 8       32-bit integer  action          0 // connect
@@ -66,8 +93,8 @@ struct ConnectReq {
     transaction_id: u32,
 }
 
-impl ConnectReq {
-    pub fn deserialise(data: &[u8]) -> Result<Self, ParseErr> {
+impl UdpMessage for ConnectReq {
+    fn deserialise(data: &[u8]) -> Result<Self, ParseErr> {
         let mut cursor = Cursor::new(data);
         let protocol_id = cursor.read_u64::<BigEndian>()?;
         let action = cursor.read_u32::<BigEndian>()?;
@@ -80,7 +107,7 @@ impl ConnectReq {
         })
     }
 
-    pub fn serialize(&self) -> Vec<u8> {
+    fn serialize(&self) -> Vec<u8> {
         let mut data = Vec::new();
 
         data.write_u64::<BigEndian>(self.protocol_id);
@@ -88,6 +115,10 @@ impl ConnectReq {
         data.write_u32::<BigEndian>(self.transaction_id);
 
         data
+    }
+
+    fn buffer_len() -> usize {
+        16
     }
 }
 
@@ -102,8 +133,8 @@ struct ConnectRes {
     connection_id: u64,
 }
 
-impl ConnectRes {
-    pub fn deserialise(data: &[u8]) -> Result<Self, ParseErr> {
+impl UdpMessage for ConnectRes {
+    fn deserialise(data: &[u8]) -> Result<Self, ParseErr> {
         let mut cursor = Cursor::new(data);
         let action = cursor.read_u32::<BigEndian>()?;
         let transaction_id = cursor.read_u32::<BigEndian>()?;
@@ -116,7 +147,7 @@ impl ConnectRes {
         })
     }
 
-    pub fn serialize(&self) -> Vec<u8> {
+    fn serialize(&self) -> Vec<u8> {
         let mut data = Vec::new();
 
         data.write_u32::<BigEndian>(self.action);
@@ -124,6 +155,10 @@ impl ConnectRes {
         data.write_u64::<BigEndian>(self.connection_id);
 
         data
+    }
+
+    fn buffer_len() -> usize {
+        16
     }
 }
 
@@ -158,8 +193,8 @@ struct AnnounceReq {
     port: u16,
 }
 
-impl AnnounceReq {
-    pub fn deserialise(data: &[u8]) -> Result<Self, ParseErr> {
+impl UdpMessage for AnnounceReq {
+    fn deserialise(data: &[u8]) -> Result<Self, ParseErr> {
         let mut cursor = Cursor::new(data);
         let connection_id = cursor.read_u64::<BigEndian>()?;
         let action = cursor.read_u32::<BigEndian>()?;
@@ -196,7 +231,7 @@ impl AnnounceReq {
         })
     }
 
-    pub fn serialize(&self) -> Vec<u8> {
+    fn serialize(&self) -> Vec<u8> {
         let mut data = Vec::new();
         data.write_u64::<BigEndian>(self.connection_id);
         data.write_u32::<BigEndian>(self.action);
@@ -215,6 +250,10 @@ impl AnnounceReq {
         data.write_u16::<BigEndian>(self.port);
 
         data
+    }
+
+    fn buffer_len() -> usize {
+       98 
     }
 }
 
@@ -236,10 +275,12 @@ struct AnnounceRes {
     peers: Vec<(Ipv4Addr, u16)>,
 }
 
-impl AnnounceRes {
-    pub fn deserialise(data: &[u8]) -> Result<Self, ParseErr> {
+impl UdpMessage for AnnounceRes {
+    fn deserialise(data: &[u8]) -> Result<Self, ParseErr> {
         let len = data.len();
+
         let mut cursor = Cursor::new(data);
+
         let action = cursor.read_u32::<BigEndian>()?;
         let transaction_id = cursor.read_u32::<BigEndian>()?;
         let interval = cursor.read_u32::<BigEndian>()?;
@@ -279,10 +320,16 @@ impl AnnounceRes {
             announce_res.peers.push((ip_address, port));
         }
 
-        return Ok(announce_res);
+        Ok(announce_res)
     }
 
-    pub fn serialize(&self) -> Vec<u8> {
+    fn serialize(&self) -> Vec<u8> {
         unimplemented!()
+    }
+
+    fn buffer_len() -> usize {
+        const MAX_ADDRESSES: usize = 2048;
+
+        20 + 6 * MAX_ADDRESSES
     }
 }

@@ -18,6 +18,7 @@ urlencoding = "2.1.3"
 tokio-util = { version = "0.7", features = ["codec"] }
 itertools = "0.14.0"
 num_cpus = "1.17.0"
+byteorder = "1.5.0"
 
 [workspace.lints.clippy]
 nested_imports = "warn"

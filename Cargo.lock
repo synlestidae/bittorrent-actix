@@ -173,6 +173,7 @@ dependencies = [
  "actix",
  "actix-rt",
  "bitvec",
+ "byteorder",
  "ctor",
  "env_logger",
  "itertools",
@@ -207,6 +208,12 @@ checksum = "3078c7629b62d3f0439517fa394996acacc5cbc91c5a20d8c658e77abd503a71"
 dependencies = [
  "generic-array",
 ]
+
+[[package]]
+name = "byteorder"
+version = "1.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1fd0f2584146f6f2ef48085050886acf353beff7305ebd1ae69500e27c67f64b"
 
 [[package]]
 name = "bytes"
