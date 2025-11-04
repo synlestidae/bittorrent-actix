@@ -1,6 +1,5 @@
 mod tracker;
-mod udp_server;
-mod udp_tracker;
+mod udp_client;
 mod uri;
 
 pub use tracker::{AskTracker, Tracker, TrackerError, HttpTrackerResponse};

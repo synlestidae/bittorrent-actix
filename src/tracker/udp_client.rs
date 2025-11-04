@@ -15,6 +15,7 @@ pub struct UdpClient {
     timeout: Duration,
 }
 
+#[derive(Debug)]
 pub enum UdpClientErr {
     Io(io::Error),
     ParseErr(ParseErr),
@@ -65,6 +66,7 @@ impl UdpClient {
     }
 }
 
+#[derive(Debug)]
 pub enum ParseErr {
     Io(io::Error),
     TooShort,
@@ -82,15 +84,21 @@ trait UdpMessage: Sized {
     fn buffer_len() -> usize;
 }
 
+pub const UDP_PROTOCOL_ID: u64 = 0x41727101980;
+
+pub const CONNECT_ACTION: u32 = 0;
+
+pub const ACCOUNT_ACTION: u32 = 1;
+
 /// Offset  Size            Name            Value
 /// 0       64-bit integer  protocol_id     0x41727101980 // magic constant
 /// 8       32-bit integer  action          0 // connect
 /// 12      32-bit integer  transaction_id
 /// 16
-struct ConnectReq {
-    protocol_id: u64,
-    action: u32,
-    transaction_id: u32,
+pub struct ConnectReq {
+    pub protocol_id: u64,
+    pub action: u32,
+    pub transaction_id: u32,
 }
 
 impl UdpMessage for ConnectReq {
@@ -127,10 +135,10 @@ impl UdpMessage for ConnectReq {
 /// 4       32-bit integer  transaction_id
 /// 8       64-bit integer  connection_id
 /// 16
-struct ConnectRes {
-    action: u32,
-    transaction_id: u32,
-    connection_id: u64,
+pub struct ConnectRes {
+    pub action: u32,
+    pub transaction_id: u32,
+    pub connection_id: u64,
 }
 
 impl UdpMessage for ConnectRes {
@@ -162,6 +170,13 @@ impl UdpMessage for ConnectRes {
     }
 }
 
+pub const ANNOUNCE_ACTION: u32 = 0;
+
+pub const NONE_EVENT: u32 = 0;
+pub const COMPLETED_EVENT: u32 = 1;
+pub const STARTEED_EVENT: u32 = 2;
+pub const STOPPED_EVENT: u32 = 3;
+
 /// Offset  Size    Name    Value
 /// 0       64-bit integer  connection_id
 /// 8       32-bit integer  action          1 // announce
@@ -177,20 +192,20 @@ impl UdpMessage for ConnectRes {
 /// 92      32-bit integer  num_want        -1 // default
 /// 96      16-bit integer  port
 /// 98
-struct AnnounceReq {
-    connection_id: u64,
-    action: u32,
-    transaction_id: u32,
-    info_hash: [u8; 20],
-    peer_id: [u8; 20],
-    downloaded: u64,
-    left: u64,
-    uploaded: u64,
-    event: u32,
-    ip_address: u32,
-    key: u32,
-    num_want: u32,
-    port: u16,
+pub struct AnnounceReq {
+    pub connection_id: u64,
+    pub action: u32,
+    pub transaction_id: u32,
+    pub info_hash: [u8; 20],
+    pub peer_id: [u8; 20],
+    pub downloaded: u64,
+    pub left: u64,
+    pub uploaded: u64,
+    pub event: u32,
+    pub ip_address: u32,
+    pub key: u32,
+    pub num_want: i32,
+    pub port: u16,
 }
 
 impl UdpMessage for AnnounceReq {
@@ -211,7 +226,7 @@ impl UdpMessage for AnnounceReq {
         let event = cursor.read_u32::<BigEndian>()?;
         let ip_address = cursor.read_u32::<BigEndian>()?;
         let key = cursor.read_u32::<BigEndian>()?;
-        let num_want = cursor.read_u32::<BigEndian>()?;
+        let num_want = cursor.read_i32::<BigEndian>()?;
         let port = cursor.read_u16::<BigEndian>()?;
 
         Ok(Self {
@@ -246,7 +261,7 @@ impl UdpMessage for AnnounceReq {
         data.write_u32::<BigEndian>(self.event);
         data.write_u32::<BigEndian>(self.ip_address);
         data.write_u32::<BigEndian>(self.key);
-        data.write_u32::<BigEndian>(self.num_want);
+        data.write_i32::<BigEndian>(self.num_want);
         data.write_u16::<BigEndian>(self.port);
 
         data
@@ -266,13 +281,13 @@ impl UdpMessage for AnnounceReq {
 /// 20 + 6 * n  32-bit integer  IP address
 /// 24 + 6 * n  16-bit integer  TCP port
 /// 20 + 6 * N
-struct AnnounceRes {
-    action: u32,
-    transaction_id: u32,
-    interval: u32,
-    leechers: u32,
-    seeders: u32,
-    peers: Vec<(Ipv4Addr, u16)>,
+pub struct AnnounceRes {
+    pub action: u32,
+    pub transaction_id: u32,
+    pub interval: u32,
+    pub leechers: u32,
+    pub seeders: u32,
+    pub peers: Vec<(Ipv4Addr, u16)>,
 }
 
 impl UdpMessage for AnnounceRes {

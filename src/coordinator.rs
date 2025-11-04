@@ -16,6 +16,7 @@ use crate::peer::{Peer, PeerError, SendMessages};
 use crate::commander::Command;
 use crate::commander::Commander;
 use crate::commander::CommanderRequest;
+use crate::tracker::HttpTrackerResponse;
 
 const TIMEOUT_CONNECT_SECS: u64 = 5;
 
@@ -114,7 +115,7 @@ impl Actor for Coordinator {
 #[derive(Message)]
 #[rtype(result = "Result<(), PeerError>")]
 pub struct TrackerUpdate {
-    pub tracker_response: TrackerResponse,
+    pub tracker_response: HttpTrackerResponse,
 }
 
 #[derive(Message, Debug)]

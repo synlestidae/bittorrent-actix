@@ -1,4 +1,5 @@
 #![feature(bufreader_peek)]
+#![feature(string_from_utf8_lossy_owned)]
 use actix::prelude::*;
 use std::env::args;
 use std::fs::File;
