@@ -42,7 +42,7 @@ async fn main() {
             Err(err) => {
                 error!("Error parsing magnet uri: {:?}", err);
                 exit(1);
-            },
+            }
             Ok(u) => u,
         };
 
@@ -70,7 +70,6 @@ async fn main() {
     };
 
     debug!("Starting system");
-
 
     debug!("Sending InitDownload");
     if let Err(err) = init_addr.send(InitDownload {}).await {

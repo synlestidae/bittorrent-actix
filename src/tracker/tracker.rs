@@ -1,5 +1,7 @@
 use crate::bittorrent::Bencoding;
 use crate::bittorrent::Metadata;
+use crate::bittorrent::ParseErr;
+use crate::bittorrent::Uri;
 use crate::tracker::udp_client::ANNOUNCE_ACTION;
 use crate::tracker::udp_client::AnnounceReq;
 use crate::tracker::udp_client::AnnounceRes;
@@ -9,8 +11,6 @@ use crate::tracker::udp_client::ConnectRes;
 use crate::tracker::udp_client::NONE_EVENT;
 use crate::tracker::udp_client::UDP_PROTOCOL_ID;
 use crate::tracker::udp_client::UdpClient;
-use crate::bittorrent::ParseErr;
-use crate::bittorrent::Uri;
 use actix::prelude::*;
 use log::{debug, error};
 use percent_encoding::{NON_ALPHANUMERIC, percent_encode};

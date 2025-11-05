@@ -1,11 +1,11 @@
 mod bencoding;
 mod codec;
 mod ids;
+mod magnet;
 mod message;
 mod metadata;
 mod piece;
 mod uri;
-mod magnet;
 
 pub use bencoding::Bencoding;
 pub use bencoding::Position;
@@ -17,6 +17,6 @@ pub use metadata::ModeFile;
 pub use piece::CompletePiece;
 pub use piece::Piece;
 pub use piece::PieceRequest;
-pub use uri::{Uri, ParseErr};
+pub use uri::{ParseErr, Uri};
 
 pub use ids::*;

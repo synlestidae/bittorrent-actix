@@ -20,7 +20,11 @@ pub struct Init {
 }
 
 impl Init {
-    pub async fn with_metadata(metadata: Metadata, piece_file: PieceFile, info_hash: [u8; 20]) -> Self {
+    pub async fn with_metadata(
+        metadata: Metadata,
+        piece_file: PieceFile,
+        info_hash: [u8; 20],
+    ) -> Self {
         let tracker_addr = Tracker::new(metadata.clone(), info_hash).start();
 
         Self {
