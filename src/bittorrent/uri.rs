@@ -11,14 +11,35 @@ pub struct Uri {
 
 #[derive(Debug, Eq, PartialEq)]
 pub enum ParseErr {
-    Encoding { while_parsing: &'static str, inner: FromUtf8Error },
-    UnexpectedEnd { while_parsing: &'static str },
-    UnexpectedChar { expected: &'static str, index_actual: usize, index_expected: usize },
+    Encoding {
+        while_parsing: &'static str,
+        inner: FromUtf8Error,
+    },
+    UnexpectedEnd {
+        while_parsing: &'static str,
+    },
+    UnexpectedChar {
+        expected: &'static str,
+        index_actual: usize,
+        index_expected: usize,
+    },
     InvalidPort,
-    InvalidUriComponent { string: String, index: usize },
+    InvalidUriComponent {
+        string: String,
+        index: usize,
+    },
 }
 
 impl Uri {
+    pub fn query(&self, key: &str) -> Vec<String> {
+        self.query
+            .iter()
+            .cloned()
+            .filter(|(k, _)| k == key)
+            .map(|(_, v)| v)
+            .collect()
+    }
+
     pub fn parse(uri: &str) -> Result<Self, ParseErr> {
         let mut i = 0;
         let bytes = uri.as_bytes();
@@ -44,7 +65,12 @@ impl Uri {
         }
         let scheme = match String::from_utf8(uri[start..*i].to_vec()) {
             Ok(s) => s,
-            Err(inner) => return Err(ParseErr::Encoding { while_parsing: "scheme", inner }),
+            Err(inner) => {
+                return Err(ParseErr::Encoding {
+                    while_parsing: "scheme",
+                    inner,
+                });
+            }
         };
         Self::eat(uri, i, ":")?;
 
@@ -63,7 +89,12 @@ impl Uri {
 
         let host = match String::from_utf8(uri[start..*i].to_vec()) {
             Ok(s) => s,
-            Err(inner) => return Err(ParseErr::Encoding { while_parsing: "host", inner }),
+            Err(inner) => {
+                return Err(ParseErr::Encoding {
+                    while_parsing: "host",
+                    inner,
+                });
+            }
         };
 
         Ok(Some(host))
@@ -93,7 +124,12 @@ impl Uri {
 
         let digits = match String::from_utf8(uri[start..*i].to_vec()) {
             Ok(d) => d,
-            Err(inner) => return Err(ParseErr::Encoding { while_parsing: "port", inner }),
+            Err(inner) => {
+                return Err(ParseErr::Encoding {
+                    while_parsing: "port",
+                    inner,
+                });
+            }
         };
         let port = match u16::from_str_radix(&digits, 10) {
             Ok(n) => n,
@@ -117,74 +153,38 @@ impl Uri {
         }
         let path = match String::from_utf8(uri[start..*i].to_vec()) {
             Ok(n) => n,
-            Err(inner) => return Err(ParseErr::Encoding { while_parsing: "path", inner }),
+            Err(inner) => {
+                return Err(ParseErr::Encoding {
+                    while_parsing: "path",
+                    inner,
+                });
+            }
         };
         Ok(Some(path))
     }
 
     fn parse_query(uri: &[u8], i: &mut usize) -> Result<Vec<(String, String)>, ParseErr> {
-        let mut query = Vec::new();
         if *i == uri.len() {
             return Ok(vec![]);
         }
 
         Self::eat(uri, i, "?")?;
 
+        let mut parser = KeyValueParser::new();
+        let mut query = Vec::new();
+
         loop {
             if *i == uri.len() {
                 return Ok(query);
             }
 
-            let mut key = Vec::new();
-            let mut val = Vec::new();
-
-            while *i < uri.len() && uri[*i] != b'=' {
-                key.push(uri[*i]);
-                *i += 1;
-            }
-            Self::eat(uri, i, "=");
-            let decoded_key = decode_uri_encoding(&key)?;
-            let key_string = match String::from_utf8(decoded_key) {
-                Ok(s) => s,
-                Err(inner) => return Err(ParseErr::Encoding { while_parsing: "query", inner }),
-            };
-
-            if *i == uri.len() {
-                let decoded_val = decode_uri_encoding(&val)?;
-                let value_string = match String::from_utf8(decoded_val) {
-                    Ok(s) => s,
-                    Err(inner) => return Err(ParseErr::Encoding { while_parsing: "query", inner }),
-                };
-                query.push((key_string, value_string));
-                return Ok(query);
-            }
-            Self::eat(uri, i, "=")?;
-
-            while *i < uri.len() && uri[*i] != b'&' {
-                val.push(uri[*i]);
-                *i += 1;
+            parser.push(uri[*i]);
+            if parser.done {
+                query.push(parser.complete().unwrap());
+                println!("Query is {:?}", query);
             }
 
-            let decoded_key = decode_uri_encoding(&key)?;
-            let decoded_val = decode_uri_encoding(&val)?;
-
-            println!("Me parse key {:?}", decoded_key);
-            println!("Me parse val {:?}", decoded_val);
-
-            let key_string = match String::from_utf8(decoded_key) {
-                Ok(s) => s,
-                Err(inner) => return Err(ParseErr::Encoding { while_parsing: "query", inner }),
-            };
-            let value_string = match String::from_utf8(decoded_val) {
-                Ok(s) => s,
-                Err(inner) => return Err(ParseErr::Encoding { while_parsing: "query", inner }),
-            };
-            println!("{}={}", key_string, value_string);
-            query.push((key_string, value_string));
-
-            if *i < uri.len() {
-                Self::eat(uri, i, "&");
-            }
+            *i += 1;
         }
     }
 
@@ -228,7 +228,7 @@ impl KeyValueParser {
         Self {
             done: false,
             decoding: false,
-            parsing_key: false,
+            parsing_key: true,
             key: vec![],
             val: vec![],
             encoded: vec![],
@@ -236,32 +236,49 @@ impl KeyValueParser {
     }
 
     fn push(&mut self, byte: u8) {
+        println!("Byte {}", byte as char);
         if byte == b'&' {
+            println!("An and");
             self.done = true;
             return;
         }
         if byte == b'%' && !self.decoding {
+            println!("An percent");
             self.decoding = true;
             return;
         }
         if self.decoding && self.encoded.len() == 1 {
+            println!("An decode");
             self.encoded.push(byte);
             return self.decode();
         }
-        if self.decoding {
-            self.encoded.push(byte); 
+        if self.decoding && self.encoded.len() == 0 {
+            println!("NOW DECODE");
+            self.encoded.push(byte);
+            return;
+        }
+        if byte == b'=' {
+            println!("NOW VAL");
+            self.parsing_key = false;
+            return;
         }
         if self.parsing_key {
+            println!("PUSH ON KEY {}", byte as char);
             self.key.push(byte);
         } else {
+            println!("PUSH ON VAL {}", byte as char);
             self.val.push(byte);
         }
     }
 
     fn decode(&mut self) {
         let digits = String::from_utf8(self.encoded.clone()).unwrap();
-        let number = digits.parse::<u8>().unwrap();
-        
+        println!("decode {:?}", digits);
+        let number = u8::from_str_radix(&digits, 16).unwrap();
+
+        self.encoded = vec![];
+        self.decoding = false;
+
         if self.parsing_key {
             self.key.push(number);
         } else {
@@ -278,10 +295,9 @@ impl KeyValueParser {
 
         mem::swap(self, &mut Self::new());
 
-        Ok((key,val)) 
+        Ok((key, val))
     }
 }
-
 
 fn decode_uri_encoding(data: &[u8]) -> Result<Vec<u8>, ParseErr> {
     let mut result = Vec::new();
@@ -298,11 +314,21 @@ fn decode_uri_encoding(data: &[u8]) -> Result<Vec<u8>, ParseErr> {
 
             let digits = match String::from_utf8(data[start..i].to_vec()) {
                 Ok(d) => d,
-                Err(inner) => return Err(ParseErr::Encoding { while_parsing: "uri component", inner }),
+                Err(inner) => {
+                    return Err(ParseErr::Encoding {
+                        while_parsing: "uri component",
+                        inner,
+                    });
+                }
             };
             let byte = match digits.parse::<u8>() {
                 Ok(b) => b,
-                Err(_) => return Err(ParseErr::InvalidUriComponent { string: String::from_utf8_lossy_owned(data.to_vec()), index: start }),
+                Err(_) => {
+                    return Err(ParseErr::InvalidUriComponent {
+                        string: String::from_utf8_lossy_owned(data.to_vec()),
+                        index: start,
+                    });
+                }
             };
 
             result.push(byte);
@@ -388,13 +414,39 @@ mod test {
     #[test]
     fn test_magnet_uri() {
         assert_eq!(
-            Uri::parse("magnet:?xt=urn:btih:8C9E40087DF68D28C233FDFF191D76411B644BEE&dn=The%20Bear%20S04E01%201080p%20WEB%20h264-ETHEL&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337&tr=udp%3A%2F%2Fopen.stealth.si%3A80%2Fannounce&tr=udp%3A%2F%2Ftracker.torrent.eu.org%3A451%2Fannounce&tr=udp%3A%2F%2Ftracker.bittor.pw%3A1337%2Fannounce&tr=udp%3A%2F%2Fpublic.popcorn-tracker.org%3A6969%2Fannounce&tr=udp%3A%2F%2Ftracker.dler.org%3A6969%2Fannounce&tr=udp%3A%2F%2Fexodus.desync.com%3A6969&tr=udp%3A%2F%2Fopen.demonii.com%3A1337%2Fannounce&tr=udp%3A%2F%2Fglotorrents.pw%3A6969%2Fannounce&tr=udp%3A%2F%2Ftracker.coppersurfer.tk%3A6969&tr=udp%3A%2F%2Ftorrent.gresille.org%3A80%2Fannounce&tr=udp%3A%2F%2Fp4p.arenabg.com%3A1337&tr=udp%3A%2F%2Ftracker.internetwarriors.net%3A1337"),
+            Uri::parse(
+                "magnet:?xt=urn:btih:8C9E40087DF68D28C233FDFF191D76411B644BEE&dn=The%20Bear%20S04E01%201080p%20WEB%20h264-ETHEL&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337&tr=udp%3A%2F%2Fopen.stealth.si%3A80%2Fannounce&tr=udp%3A%2F%2Ftracker.torrent.eu.org%3A451%2Fannounce&tr=udp%3A%2F%2Ftracker.bittor.pw%3A1337%2Fannounce&tr=udp%3A%2F%2Fpublic.popcorn-tracker.org%3A6969%2Fannounce&tr=udp%3A%2F%2Ftracker.dler.org%3A6969%2Fannounce&tr=udp%3A%2F%2Fexodus.desync.com%3A6969&tr=udp%3A%2F%2Fopen.demonii.com%3A1337%2Fannounce&tr=udp%3A%2F%2Fglotorrents.pw%3A6969%2Fannounce&tr=udp%3A%2F%2Ftracker.coppersurfer.tk%3A6969&tr=udp%3A%2F%2Ftorrent.gresille.org%3A80%2Fannounce&tr=udp%3A%2F%2Fp4p.arenabg.com%3A1337&tr=udp%3A%2F%2Ftracker.internetwarriors.net%3A1337"
+            ),
             Ok(Uri {
-                scheme: "http".to_owned(),
-                host: Some("localhost".to_owned()),
-                port: Some(1234),
+                scheme: "magnet".to_owned(),
+                host: None,
+                port: None,
                 path: None,
-                query: vec![]
+                query: vec![
+                    (
+                        "xt".into(),
+                        "urn:btih:8C9E40087DF68D28C233FDFF191D76411B644BEE".into()
+                    ),
+                    ("dn".into(), "The Bear S04E01 1080p WEB h264-ETHEL".into()),
+                    ("tr".into(), "udp://tracker.opentrackr.org:1337".into()),
+                    ("tr".into(), "udp://open.stealth.si:80/announce".into()),
+                    (
+                        "tr".into(),
+                        "udp://tracker.torrent.eu.org:451/announce".into()
+                    ),
+                    ("tr".into(), "udp://tracker.bittor.pw:1337/announce".into()),
+                    (
+                        "tr".into(),
+                        "udp://public.popcorn-tracker.org:6969/announce".into()
+                    ),
+                    ("tr".into(), "udp://tracker.dler.org:6969/announce".into()),
+                    ("tr".into(), "udp://exodus.desync.com:6969".into()),
+                    ("tr".into(), "udp://open.demonii.com:1337/announce".into()),
+                    ("tr".into(), "udp://glotorrents.pw:6969/announce".into()),
+                    ("tr".into(), "udp://tracker.coppersurfer.tk:6969".into()),
+                    ("tr".into(), "udp://torrent.gresille.org:80/announce".into()),
+                    ("tr".into(), "udp://p4p.arenabg.com:1337".into())
+                ]
             })
         );
     }

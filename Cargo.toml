@@ -19,6 +19,8 @@ tokio-util = { version = "0.7", features = ["codec"] }
 itertools = "0.14.0"
 num_cpus = "1.17.0"
 byteorder = "1.5.0"
+reqwest = "0.12.24"
+hex = "0.4.3"
 
 [workspace.lints.clippy]
 nested_imports = "warn"

@@ -1,9 +1,10 @@
-use std::{
-    io::{self, Cursor},
-    net::Ipv4Addr, time::Duration,
-};
 use std::io::Read;
 use std::io::Write;
+use std::{
+    io::{self, Cursor},
+    net::Ipv4Addr,
+    time::Duration,
+};
 pub use tokio::net::UdpSocket;
 
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
@@ -44,7 +45,7 @@ impl UdpClient {
             host: host.to_owned(),
             port,
             socket,
-            timeout
+            timeout,
         })
     }
 
@@ -60,7 +61,7 @@ impl UdpClient {
         let mut buffer = vec![0u8; M::buffer_len()];
 
         self.socket.recv(&mut buffer).await?;
-        
+
         let message: M = M::deserialise(&buffer)?;
         Ok(message)
     }
@@ -268,7 +269,7 @@ impl UdpMessage for AnnounceReq {
     }
 
     fn buffer_len() -> usize {
-       98 
+        98
     }
 }
 
@@ -329,7 +330,8 @@ impl UdpMessage for AnnounceRes {
                     }
                 }
             }
-            let ip_address = Ipv4Addr::new(ip_address[0], ip_address[1], ip_address[2], ip_address[3]);
+            let ip_address =
+                Ipv4Addr::new(ip_address[0], ip_address[1], ip_address[2], ip_address[3]);
             let port = ((port_bytes[0] as u16) << 8) + port_bytes[1] as u16;
 
             announce_res.peers.push((ip_address, port));

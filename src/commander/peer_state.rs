@@ -112,6 +112,7 @@ impl PeerState {
             }
             BittorrentMessage::Cancel { .. } => (),
             BittorrentMessage::Port { .. } => (),
+            _ => unimplemented!(),
         }
     }
 

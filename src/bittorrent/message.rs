@@ -1,7 +1,10 @@
 use std::error;
 use std::fmt;
+use std::io::BufReader;
+use std::io::Cursor;
 
 use super::ids::*;
+use crate::bittorrent::Bencoding;
 use crate::bittorrent::NOT_INTERESTED;
 
 #[derive(Debug)]
@@ -34,6 +37,10 @@ pub enum BittorrentMessage {
     },
     Port {
         port: u16,
+    },
+    ExtensionMessage {
+        message_id: u8,
+        message: Bencoding,
     },
 }
 
@@ -112,6 +119,22 @@ impl BittorrentMessage {
 
                 Ok(BittorrentMessage::Port { port })
             }
+            EXTENSION => {
+                let message_id = payload[0];
+
+                let cursor = Cursor::new(&payload[1..payload.len()]);
+                let mut data = BufReader::new(cursor);
+
+                let message = match Bencoding::deserialize(&mut data) {
+                    Ok(m) => m,
+                    Err(_) => return Err(ParseError::Malformed),
+                };
+
+                Ok(BittorrentMessage::ExtensionMessage {
+                    message_id,
+                    message,
+                })
+            }
             id => Err(ParseError::UnknownId(id)),
         }
     }
@@ -126,14 +149,14 @@ impl BittorrentMessage {
             BittorrentMessage::Have { piece_index } => {
                 let mut v: Vec<u8> = Vec::with_capacity(4 + 1 + 4);
                 v.extend_from_slice(&(1u32 + 4u32).to_be_bytes());
-                v.push(4);
+                v.push(HAVE);
                 v.extend_from_slice(&piece_index.to_be_bytes());
                 v
             }
             BittorrentMessage::Bitfield { bitfield } => {
                 let mut v = Vec::with_capacity(4 + 1 + bitfield.len());
                 v.extend_from_slice(&(1 + bitfield.len() as u32).to_be_bytes());
-                v.push(5);
+                v.push(BITFIELD);
                 v.extend_from_slice(bitfield);
                 v
             }
@@ -144,7 +167,7 @@ impl BittorrentMessage {
             } => {
                 let mut v = Vec::with_capacity(4 + 1 + 12);
                 v.extend_from_slice(&(1u32 + 12u32).to_be_bytes());
-                v.push(6);
+                v.push(REQUEST);
                 v.extend_from_slice(&index.to_be_bytes());
                 v.extend_from_slice(&begin.to_be_bytes());
                 v.extend_from_slice(&length.to_be_bytes());
@@ -157,7 +180,7 @@ impl BittorrentMessage {
             } => {
                 let mut v = Vec::with_capacity(4 + 1 + 2 * (4) + block.len());
                 v.extend_from_slice(&(9u32 + block.len() as u32).to_be_bytes());
-                v.push(7);
+                v.push(PIECE);
                 v.extend_from_slice(&index.to_be_bytes());
                 v.extend_from_slice(&begin.to_be_bytes());
                 v.extend_from_slice(block);
@@ -170,7 +193,7 @@ impl BittorrentMessage {
             } => {
                 let mut v = Vec::with_capacity(4 + 1 + 3 * 4);
                 v.extend_from_slice(&(3u32 * 4u32).to_be_bytes());
-                v.push(8);
+                v.push(CANCEL);
                 v.extend_from_slice(&index.to_be_bytes());
                 v.extend_from_slice(&begin.to_be_bytes());
                 v.extend_from_slice(&length.to_be_bytes());
@@ -179,8 +202,18 @@ impl BittorrentMessage {
             BittorrentMessage::Port { port } => {
                 let mut v = Vec::with_capacity(4 + 1 + 2);
                 v.extend_from_slice(&(1u32 + 2u32).to_be_bytes());
-                v.push(9);
+                v.push(PORT);
                 v.extend_from_slice(&port.to_be_bytes());
+                v
+            }
+            BittorrentMessage::ExtensionMessage {
+                message_id,
+                message,
+            } => {
+                let mut v = vec![*message_id];
+                let mut cursor = Cursor::new(&mut v);
+                message.serialize(&mut cursor).unwrap(); // TODO
+
                 v
             }
         }

@@ -8,3 +8,4 @@ pub const REQUEST: u8 = 6;
 pub const PIECE: u8 = 7;
 pub const CANCEL: u8 = 8;
 pub const PORT: u8 = 9;
+pub const EXTENSION: u8 = 20;

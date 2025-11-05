@@ -8,7 +8,7 @@ use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::process::exit;
 
 use env_logger::init;
-use log::{debug, error, info};
+use log::{debug, error};
 use sha1::{Digest, Sha1};
 
 mod bittorrent;
@@ -19,7 +19,7 @@ mod init;
 mod peer;
 mod tracker;
 
-use crate::bittorrent::{Bencoding, Metadata, Position};
+use crate::bittorrent::{Bencoding, Metadata, Position, Uri};
 use crate::filer::PieceFile;
 use crate::init::{Init, InitDownload};
 
@@ -37,41 +37,40 @@ async fn main() {
     }
 
     let metadata_file = &metadata[1];
+    let init_addr: Addr<Init> = if metadata_file.starts_with("magnet:") {
+        let uri = match Uri::parse(metadata_file) {
+            Err(err) => {
+                error!("Error parsing magnet uri: {:?}", err);
+                exit(1);
+            },
+            Ok(u) => u,
+        };
 
-    // Open the file to decode metadata
-    let handle = File::open(metadata_file).unwrap();
-    let mut reader = BufReader::new(handle);
-    let file = Bencoding::deserialize(&mut reader).unwrap();
-    drop(reader);
+        unimplemented!()
+    } else {
+        // Open the file to decode metadata
+        let handle = File::open(metadata_file).unwrap();
+        let mut reader = BufReader::new(handle);
+        let file = Bencoding::deserialize(&mut reader).unwrap();
+        drop(reader);
 
-    let metadata = Metadata::parse(file).unwrap();
+        let metadata = Metadata::parse(file).unwrap();
 
-    // Open the file again, this time for hashing
-    let mut handle = File::open(metadata_file).unwrap();
-    let info_hash = get_info_hash(&mut handle, metadata.info.position.clone());
-    drop(handle);
+        // Open the file again, this time for hashing
+        let mut handle = File::open(metadata_file).unwrap();
+        let info_hash = get_info_hash(&mut handle, metadata.info.position.clone());
+        drop(handle);
 
-    info!("Announce URL: {}", metadata.announce);
-    info!("Pieces: {}", metadata.info.pieces.len());
-    info!("Piece length: {}", metadata.info.pieces_length);
-    info!(
-        "Directory: {}",
-        String::from_utf8_lossy(&metadata.info.name)
-    );
+        let filename = metadata.info.part_filename();
+        let mut piece_file = PieceFile::open(&filename).await.unwrap();
+        piece_file.initialise().await.unwrap();
 
-    let info_hex = info_hash
-        .iter()
-        .map(|b| format!("{:02x}", b))
-        .collect::<String>();
-    info!("Info hash: {}", info_hex);
+        let init = Init::with_metadata(metadata, piece_file, info_hash).await;
+        init.start()
+    };
 
     debug!("Starting system");
 
-    let filename = metadata.info.part_filename();
-    let mut piece_file = PieceFile::open(&filename).await.unwrap();
-    piece_file.initialise().await.unwrap();
-    let init = Init::new(metadata, piece_file, info_hash).await;
-    let init_addr: Addr<Init> = init.start();
 
     debug!("Sending InitDownload");
     if let Err(err) = init_addr.send(InitDownload {}).await {
