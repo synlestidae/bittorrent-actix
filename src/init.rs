@@ -1,39 +1,31 @@
 use actix::prelude::*;
 
-use crate::bittorrent::Metadata;
 use crate::coordinator::Coordinator;
-use crate::coordinator::TrackerUpdate;
 use crate::filer::Filer;
 use crate::filer::PieceFile;
-use crate::tracker::{AskTracker, Tracker, TrackerError};
-use tokio::io;
-
-use log::debug;
+use crate::tracker::MetadataSource;
+use crate::tracker::TrackerTracker;
 
 pub struct Init {
-    metadata: Metadata,
-    piece_file: PieceFile,
-    tracker_addr: Addr<Tracker>,
-    coordinator_addr: Option<Addr<Coordinator>>,
-    filer_addr: Option<Addr<Filer>>,
-    info_hash: [u8; 20],
+    tracker_tracker: Addr<TrackerTracker>,
 }
 
 impl Init {
-    pub async fn with_metadata(
-        metadata: Metadata,
-        piece_file: PieceFile,
-        info_hash: [u8; 20],
-    ) -> Self {
-        let tracker_addr = Tracker::new(metadata.clone(), info_hash).start();
+    pub fn new(metadata_source: MetadataSource, piece_file: PieceFile) -> Self {
+        let (metadata, info_hash) = match metadata_source.clone() {
+            MetadataSource::Magnet { .. } => todo!("magnet not yet implemented"),
+            MetadataSource::Metadata {
+                info_hash,
+                metadata,
+            } => (metadata, info_hash),
+        };
+
+        let filer_addr = Filer::new(metadata, piece_file).start();
+        let coordinator_addr = Coordinator::new(info_hash, filer_addr).start();
+        let tracker_tracker = TrackerTracker::new(metadata_source, coordinator_addr.recipient());
 
         Self {
-            metadata,
-            tracker_addr,
-            coordinator_addr: None,
-            filer_addr: None,
-            piece_file,
-            info_hash,
+            tracker_tracker: tracker_tracker.start(),
         }
     }
 }
@@ -42,16 +34,17 @@ impl Actor for Init {
     type Context = Context<Self>;
 }
 
+/*
 #[derive(Message, Debug)]
 #[rtype(result = "Result<(), InitError>")]
 pub struct InitDownload {}
+*/
 
-impl Handler<InitDownload> for Init {
+/*impl Handler<InitDownload> for Init {
     type Result = ResponseActFuture<Self, Result<(), InitError>>;
 
     fn handle(&mut self, _msg: InitDownload, _ctx: &mut Context<Self>) -> Self::Result {
         debug!("Received InitDownload");
-        let info_hash = self.info_hash.clone();
         let metadata = self.metadata.clone();
         let tracker_addr = self.tracker_addr.clone();
         let piece_file = self.piece_file.clone();
@@ -64,14 +57,11 @@ impl Handler<InitDownload> for Init {
                     Err(_) => unreachable!("Should not fail to send message on startup"),
                 };
 
-                let info = metadata.info.clone();
-                let filer_addr = Filer::new(metadata.clone(), piece_file).await?.start();
-                let coordinator_addr = Coordinator::create(|ctx| {
-                    Coordinator::new(info, info_hash, filer_addr.clone(), ctx)
-                });
-
                 coordinator_addr
-                    .send(TrackerUpdate { tracker_response })
+                    .send(TrackerUpdate {
+                        tracker_response: Some(tracker_response),
+                        peers: Vec::new(),
+                    })
                     .await;
 
                 Ok((filer_addr, coordinator_addr))
@@ -86,8 +76,8 @@ impl Handler<InitDownload> for Init {
             }),
         )
     }
-}
-
+}*/
+/*
 pub enum InitError {
     Io(io::Error),
     Mailbox(MailboxError),
@@ -110,4 +100,4 @@ impl From<TrackerError> for InitError {
     fn from(err: TrackerError) -> Self {
         Self::Tracker(err)
     }
-}
+}*/

@@ -119,9 +119,12 @@ impl UdpMessage for ConnectReq {
     fn serialize(&self) -> Vec<u8> {
         let mut data = Vec::new();
 
-        data.write_u64::<BigEndian>(self.protocol_id);
-        data.write_u32::<BigEndian>(self.action);
-        data.write_u32::<BigEndian>(self.transaction_id);
+        data.write_u64::<BigEndian>(self.protocol_id)
+            .expect("unable to write protocol_id");
+        data.write_u32::<BigEndian>(self.action)
+            .expect("unable to write action");
+        data.write_u32::<BigEndian>(self.transaction_id)
+            .expect("unable to write transaction_id");
 
         data
     }
@@ -159,9 +162,12 @@ impl UdpMessage for ConnectRes {
     fn serialize(&self) -> Vec<u8> {
         let mut data = Vec::new();
 
-        data.write_u32::<BigEndian>(self.action);
-        data.write_u32::<BigEndian>(self.transaction_id);
-        data.write_u64::<BigEndian>(self.connection_id);
+        data.write_u32::<BigEndian>(self.action)
+            .expect("unable to write action");
+        data.write_u32::<BigEndian>(self.transaction_id)
+            .expect("unable to write transaction_id");
+        data.write_u64::<BigEndian>(self.connection_id)
+            .expect("unable to write connection_id");
 
         data
     }
@@ -249,21 +255,34 @@ impl UdpMessage for AnnounceReq {
 
     fn serialize(&self) -> Vec<u8> {
         let mut data = Vec::new();
-        data.write_u64::<BigEndian>(self.connection_id);
-        data.write_u32::<BigEndian>(self.action);
-        data.write_u32::<BigEndian>(self.transaction_id);
+        data.write_u64::<BigEndian>(self.connection_id)
+            .expect("unable to write connection_id");
+        data.write_u32::<BigEndian>(self.action)
+            .expect("unable to write action");
+        data.write_u32::<BigEndian>(self.transaction_id)
+            .expect("unable to write transaction_id");
 
-        data.write_all(&self.info_hash);
-        data.write_all(&self.peer_id);
+        data.write_all(&self.info_hash)
+            .expect("unable to write info_hash");
+        data.write_all(&self.peer_id)
+            .expect("unable to write peer_id");
 
-        data.write_u64::<BigEndian>(self.downloaded);
-        data.write_u64::<BigEndian>(self.left);
-        data.write_u64::<BigEndian>(self.uploaded);
-        data.write_u32::<BigEndian>(self.event);
-        data.write_u32::<BigEndian>(self.ip_address);
-        data.write_u32::<BigEndian>(self.key);
-        data.write_i32::<BigEndian>(self.num_want);
-        data.write_u16::<BigEndian>(self.port);
+        data.write_u64::<BigEndian>(self.downloaded)
+            .expect("unable to write downloaded");
+        data.write_u64::<BigEndian>(self.left)
+            .expect("unable to write left");
+        data.write_u64::<BigEndian>(self.uploaded)
+            .expect("unable to write uploaded");
+        data.write_u32::<BigEndian>(self.event)
+            .expect("unable to write event");
+        data.write_u32::<BigEndian>(self.ip_address)
+            .expect("unable to write ip_address");
+        data.write_u32::<BigEndian>(self.key)
+            .expect("unable to write key");
+        data.write_i32::<BigEndian>(self.num_want)
+            .expect("unable to write num_want");
+        data.write_u16::<BigEndian>(self.port)
+            .expect("unable to write port");
 
         data
     }

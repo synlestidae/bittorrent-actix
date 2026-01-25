@@ -1,7 +1,4 @@
-use std::{
-    collections::{HashMap, HashSet},
-    sync::Arc,
-};
+use std::collections::{HashMap, HashSet};
 
 use log::trace;
 
@@ -12,18 +9,16 @@ pub struct PieceTracker {
     pieces: HashMap<u32, Vec<Piece>>,
     requested_pieces: Vec<PieceRequest>,
     complete_pieces: HashSet<u32>,
-    info: Info,
 }
 
 pub const PIECE_REQUEST_SIZE: u32 = 16_384;
 
 impl PieceTracker {
-    pub fn new(info: Info) -> Self {
+    pub fn new() -> Self {
         Self {
             pieces: HashMap::new(),
             requested_pieces: vec![],
             complete_pieces: HashSet::new(),
-            info,
         }
     }
 
@@ -77,7 +72,7 @@ impl PieceTracker {
         self.pieces.remove(&piece_index);
     }
 
-    pub fn is_complete(&self, piece_index: u32) -> bool {
+    pub fn is_complete(&self, info: &Info, piece_index: u32) -> bool {
         let pieces: &Vec<_> = match self.pieces.get(&piece_index) {
             Some(p) => p,
             None => return false,
@@ -92,13 +87,13 @@ impl PieceTracker {
             piece = next_piece;
         }
 
-        let complete =
-            piece.begin + piece.block.len() as u32 >= self.info.piece_length(piece_index);
+        let piece_length = info.piece_length(piece_index);
+        let complete = piece.begin + piece.block.len() as u32 >= piece_length;
         trace!(
             "Length for {} is {} and needs to be {}",
             piece_index,
             piece.begin + piece.block.len() as u32,
-            self.info.piece_length(piece_index)
+            piece_length,
         );
         complete
     }
@@ -107,13 +102,14 @@ impl PieceTracker {
         self.complete_pieces.insert(piece_index);
     }
 
-    pub fn get_piece(&self, piece_index: u32) -> Option<Vec<u8>> {
+    pub fn get_piece(&self, info: &Info, piece_index: u32) -> Option<Vec<u8>> {
         let pieces = self.pieces.get(&piece_index)?;
         if pieces.len() == 1 {
             return Some(pieces[0].block.clone());
         }
 
-        let mut piece = vec![0u8; self.info.piece_length(piece_index) as usize];
+        let piece_length = info.piece_length(piece_index) as usize;
+        let mut piece = vec![0u8; piece_length];
         for sub_piece in pieces.iter() {
             let mut i = 0;
             let sub_piece_len = sub_piece.block.len() as u32;
@@ -126,7 +122,12 @@ impl PieceTracker {
         Some(piece)
     }
 
-    pub fn next_pieces(&mut self, assigned_piece_indexes: &[u32], max: usize) -> Vec<PieceRequest> {
+    pub fn next_pieces(
+        &mut self,
+        info: &Info,
+        assigned_piece_indexes: &[u32],
+        max: usize,
+    ) -> Vec<PieceRequest> {
         if self.requested_pieces.len() >= max {
             return vec![];
         }
@@ -148,7 +149,7 @@ impl PieceTracker {
             &pieces,
             assigned_piece_indexes,
             &self.complete_pieces,
-            &self.info,
+            info,
             PIECE_REQUEST_SIZE,
         );
 
@@ -158,11 +159,11 @@ impl PieceTracker {
         new_pieces
     }
 
-    pub fn complete_pieces(&mut self) -> Vec<CompletePiece> {
+    pub fn complete_pieces(&mut self, info: &Info) -> Vec<CompletePiece> {
         let mut complete_pieces = Vec::new();
         for piece_index in self.pieces.keys() {
-            if self.is_complete(*piece_index) {
-                let complete_piece = self.get_piece(*piece_index).unwrap();
+            if self.is_complete(info, *piece_index) {
+                let complete_piece = self.get_piece(info, *piece_index).unwrap();
                 complete_pieces.push(CompletePiece {
                     index: *piece_index,
                     data: complete_piece,

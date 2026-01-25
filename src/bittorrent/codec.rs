@@ -1,12 +1,12 @@
 use core::fmt;
-use std::error;
+use std::{error, mem};
 
 use log::trace;
 use tokio::io;
 use tokio_util::bytes::BytesMut;
 use tokio_util::codec::{Decoder, Encoder};
 
-use super::{BittorrentHandshake, BittorrentMessage, ParseError};
+use super::{BittorrentHandshake, BittorrentMessage, ExtensionMessage, ParseError};
 
 #[derive(Clone)]
 pub struct BittorrentCodec {
@@ -14,6 +14,13 @@ pub struct BittorrentCodec {
     handshake_received: bool,
     info_hash: [u8; 20],
     peer_id: [u8; 20],
+    extension_data_message: Option<ExtensionDataMessageState>,
+}
+
+#[derive(Clone)]
+struct ExtensionDataMessageState {
+    piece_index: u32,
+    total_size: u32,
 }
 
 impl BittorrentCodec {
@@ -23,6 +30,7 @@ impl BittorrentCodec {
             handshake_received: false,
             info_hash,
             peer_id,
+            extension_data_message: None,
         }
     }
 }
@@ -32,52 +40,95 @@ impl Decoder for BittorrentCodec {
     type Error = DecoderError;
 
     fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
+        if src.len() == 0 {
+            return Ok(None);
+        }
+
+        if let Some(ExtensionDataMessageState {
+            piece_index,
+            total_size,
+        }) = self.extension_data_message.clone()
+        {
+            let message_end_ext = total_size as usize;
+            if message_end_ext < src.len() {
+                return Ok(None); // wait for more data
+            }
+
+            let data = src.split_to(total_size as usize).to_vec();
+
+            return Ok(Some(vec![BittorrentMessage::ExtensionMessage {
+                message: ExtensionMessage::Data {
+                    piece_index,
+                    total_size,
+                    data,
+                },
+            }]));
+        }
+
+        let mut messages = Vec::new();
+
         if !self.handshake_received {
-            trace!("Decoding handshake first");
-            if src.is_empty() {
-                trace!("Have 0 bytes for handshake but need more");
+            let handshake_len = *(src.get(0).unwrap()) as usize;
+            if handshake_len < src.len() - 1 {
                 return Ok(None);
             }
+            drop(src.split_to(1));
 
-            const RESERVED_LEN: usize = 8;
-            const INFO_HASH_LEN: usize = 20;
-            const PEER_ID_LEN: usize = 20;
-
-            let pstr_len = src[0] as usize;
-            let total_msg_len = 1 + pstr_len + RESERVED_LEN + INFO_HASH_LEN + PEER_ID_LEN;
-            if src.len() < total_msg_len {
-                trace!(
-                    "Have {} byte(s) for handshake but need {}",
-                    src.len(),
-                    total_msg_len
-                );
-                return Ok(None);
+            let data = src.split_to(handshake_len);
+            if let Some(handshake) = BittorrentHandshake::deserialise(&data.to_vec())? {
+                messages.push(BittorrentMessage::Handshake { handshake });
             }
-
-            // don't actually care, just read off the bytes and drop them
-            drop(src.split_to(total_msg_len));
-
-            trace!("Successfully decoded handshake");
-            self.handshake_received = true;
 
             return Ok(None);
         }
 
-        // check we have enough bytes
-        let mut messages = Vec::new();
+        // message len is u32 bit (8 byte) integer
         while src.len() > 4 {
             trace!("Have {} byte(s)", src.len());
             let message_len = u32::from_be_bytes([src[0], src[1], src[2], src[3]]);
-            let total_len = message_len as usize + 4;
-            if src.len() < total_len {
+
+            let message_end = message_len as usize + 4;
+            if src.len() < message_end {
                 if messages.len() == 0 {
                     return Ok(None);
                 }
                 return Ok(Some(messages));
             }
 
-            // read the message
-            let msg = BittorrentMessage::deserialize(&src.split_to(total_len))?;
+            // read the message, but data will be empty
+            let msg = BittorrentMessage::deserialize(&src.split_to(message_end))?;
+            match msg {
+                BittorrentMessage::ExtensionMessage {
+                    message:
+                        ExtensionMessage::Data {
+                            piece_index,
+                            total_size,
+                            data: _,
+                        },
+                } => {
+                    // if we do not have enough data, save state and come back
+                    let message_end_ext = total_size as usize;
+                    if message_end_ext < src.len() {
+                        self.extension_data_message = Some(ExtensionDataMessageState {
+                            piece_index,
+                            total_size,
+                        });
+
+                        return Ok(None);
+                    }
+
+                    let data = src.split_to(message_end_ext).to_vec();
+
+                    let message = ExtensionMessage::Data {
+                        piece_index,
+                        total_size,
+                        data,
+                    };
+
+                    return Ok(Some(vec![BittorrentMessage::ExtensionMessage { message }]));
+                }
+                _ => (),
+            }
             messages.push(msg);
         }
 
@@ -93,18 +144,6 @@ impl Encoder<BittorrentMessage> for BittorrentCodec {
     type Error = io::Error;
 
     fn encode(&mut self, item: BittorrentMessage, dst: &mut BytesMut) -> Result<(), Self::Error> {
-        if !self.handshake_sent {
-            trace!("Sending handshake first");
-
-            let handshake = BittorrentHandshake {
-                info_hash: self.info_hash,
-                peer_id: self.peer_id,
-            };
-            dst.extend_from_slice(&handshake.serialize());
-
-            self.handshake_sent = true;
-        }
-
         trace!("Sending {:?}", item);
 
         dst.extend_from_slice(&item.serialize());

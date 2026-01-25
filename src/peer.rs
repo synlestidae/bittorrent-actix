@@ -1,7 +1,6 @@
 use crate::bittorrent::BittorrentCodec;
 use crate::bittorrent::BittorrentMessage;
 use crate::bittorrent::DecoderError;
-use crate::commander::CommanderRequest;
 use crate::coordinator::RecvMessage;
 use crate::coordinator::{Coordinator, PeerDisconnect};
 use actix::io::{FramedWrite, WriteHandler};

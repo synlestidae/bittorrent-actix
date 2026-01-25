@@ -161,6 +161,15 @@ impl Bencoding {
             _ => false,
         }
     }
+
+    pub fn name(&self) -> &'static str {
+        match self {
+            Bencoding::Integer { .. } => "integer",
+            Bencoding::ByteString { .. } => "bytestring",
+            Bencoding::List { .. } => "list",
+            Bencoding::Dictionary { .. } => "dictionary",
+        }
+    }
 }
 
 fn read_string<R: Read>(reader: &mut BufReader<R>) -> Result<Vec<u8>, ()> {

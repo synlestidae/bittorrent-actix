@@ -22,11 +22,11 @@ pub struct Filer {
 }
 
 impl Filer {
-    pub async fn new(metadata: Metadata, piece_file: PieceFile) -> Result<Self, io::Error> {
-        Ok(Self {
+    pub fn new(metadata: Metadata, piece_file: PieceFile) -> Self {
+        Self {
             metadata,
             piece_file,
-        })
+        }
     }
 
     fn schedule_file_writer(&self, ctx: &mut <Self as Actor>::Context) {

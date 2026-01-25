@@ -19,9 +19,10 @@ mod init;
 mod peer;
 mod tracker;
 
-use crate::bittorrent::{Bencoding, Metadata, Position, Uri};
+use crate::bittorrent::{Bencoding, Magnet, Metadata, Position, Uri};
 use crate::filer::PieceFile;
-use crate::init::{Init, InitDownload};
+use crate::init::Init;
+use crate::tracker::MetadataSource;
 
 #[actix::main(worker_threads = 50, max_blocking_threads = 50)]
 async fn main() {
@@ -45,6 +46,12 @@ async fn main() {
             }
             Ok(u) => u,
         };
+        let magnet = Magnet::parse(uri).unwrap();
+
+        // then parse uri into magnet
+        // then um... make a tracker that tracks ... the trackers
+        // then the trackers start a swarm
+        // but we don't have
 
         unimplemented!()
     } else {
@@ -65,17 +72,22 @@ async fn main() {
         let mut piece_file = PieceFile::open(&filename).await.unwrap();
         piece_file.initialise().await.unwrap();
 
-        let init = Init::with_metadata(metadata, piece_file, info_hash).await;
+        let metadata_source = MetadataSource::Metadata {
+            info_hash,
+            metadata,
+        };
+
+        let init = Init::new(metadata_source, piece_file);
         init.start()
     };
 
     debug!("Starting system");
 
-    debug!("Sending InitDownload");
+    /*debug!("Sending InitDownload");
     if let Err(err) = init_addr.send(InitDownload {}).await {
         error!("Initialisation error: {}", err);
         exit(1)
-    }
+    }*/
 
     pending::<()>().await;
 }

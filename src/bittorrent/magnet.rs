@@ -1,12 +1,15 @@
 use crate::bittorrent::Uri;
 use hex::decode;
 
+#[derive(Clone)]
 pub struct Magnet {
     pub info_hash: [u8; 20],
     pub display_name: Option<String>,
     pub trackers: Vec<String>,
+    pub exact_length: usize,
 }
 
+#[derive(Debug)]
 pub enum ParseErr {
     InvalidXt { message: &'static str },
 }
@@ -42,10 +45,16 @@ impl Magnet {
         let mut info_hash = [0u8; 20];
         data.iter().enumerate().for_each(|(i, b)| info_hash[i] = *b);
 
+        let exact_length = match uri.query("xl").first() {
+            Some(xl) => xl.parse::<usize>().unwrap(),
+            None => unimplemented!(),
+        };
+
         Ok(Magnet {
             info_hash,
             display_name,
             trackers,
+            exact_length,
         })
     }
 }

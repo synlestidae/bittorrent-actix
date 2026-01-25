@@ -10,7 +10,10 @@ mod uri;
 pub use bencoding::Bencoding;
 pub use bencoding::Position;
 pub use codec::{BittorrentCodec, DecoderError};
-pub use message::{BittorrentHandshake, BittorrentMessage, ParseError};
+pub use magnet::Magnet;
+pub use message::{
+    BittorrentHandshake, BittorrentMessage, ExtensionMessage, ExtensionRequest, ParseError,
+};
 pub use metadata::Info;
 pub use metadata::Metadata;
 pub use metadata::ModeFile;

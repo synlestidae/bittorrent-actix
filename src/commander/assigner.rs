@@ -4,6 +4,8 @@ use std::{
     net::Ipv4Addr,
 };
 
+use crate::bittorrent::Info;
+
 use super::peer_state::PeerState;
 
 pub struct Assigner<'a> {
@@ -12,12 +14,12 @@ pub struct Assigner<'a> {
 }
 
 impl<'a> Assigner<'a> {
-    pub fn assign(&mut self) {
+    pub fn assign(&mut self, info: &Info) {
         let mut we_need: HashSet<u32> = self.we_have.iter_zeros().map(|i| i as u32).collect();
         let pieces_per_peer = we_need.len() / we_need.len();
 
         for peer_state in self.peers.values_mut() {
-            let completion_stats = peer_state.completion_stats();
+            let completion_stats = peer_state.completion_stats(info);
             let pieces = completion_stats
                 .above_threshold(0.10)
                 .into_iter()

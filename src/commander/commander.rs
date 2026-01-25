@@ -1,8 +1,6 @@
 use std::{collections::HashMap, net::Ipv4Addr};
 
 use actix::prelude::*;
-use bitvec::order::Msb0;
-use bitvec::vec::BitVec;
 use log::warn;
 
 use super::peer_state::PeerState;
@@ -10,23 +8,19 @@ use crate::bittorrent::Info;
 use crate::commander::Command;
 use crate::commander::command::CommanderRequest;
 use crate::commander::peer_state::PeerChange;
-use crate::coordinator::Coordinator;
 
 pub struct Commander {
-    coordinator_addr: Addr<Coordinator>,
-    we_have: BitVec<u8, Msb0>,
     peers: HashMap<(Ipv4Addr, u16), PeerState>,
-    info: Info,
+    info_hash: [u8; 20],
+    info: Option<Info>,
 }
 
 impl Commander {
-    pub fn new(info: Info, coordinator_addr: Addr<Coordinator>) -> Commander {
-        let we_have = BitVec::repeat(false, info.num_pieces());
+    pub fn new(info_hash: [u8; 20]) -> Commander {
         Commander {
-            coordinator_addr,
             peers: HashMap::new(),
-            we_have,
-            info,
+            info_hash,
+            info: None,
         }
     }
 }
@@ -42,7 +36,7 @@ impl Handler<CommanderRequest> for Commander {
         match msg {
             CommanderRequest::AddPeer { ip_address, port } => {
                 let address = (ip_address, port);
-                let peer_state = PeerState::new(self.info.clone(), address, self.we_have.clone());
+                let peer_state = PeerState::new((ip_address, port));
                 self.peers.insert(address, peer_state);
 
                 vec![]
@@ -61,7 +55,7 @@ impl Handler<CommanderRequest> for Commander {
                     for message in messages.into_iter() {
                         peer_state.change(PeerChange::RecvMessage { message });
                     }
-                    return peer_state.commands();
+                    return peer_state.commands(self.info_hash);
                 }
 
                 warn!(

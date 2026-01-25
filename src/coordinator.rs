@@ -9,7 +9,7 @@ use rand::Rng;
 use tokio::net::TcpStream;
 use tokio::time::timeout;
 
-use crate::bittorrent::{BittorrentMessage, Info};
+use crate::bittorrent::BittorrentMessage;
 use crate::filer::{Filer, RequestPiece, RequestPieces, WholePiece};
 use crate::peer::{Peer, PeerError, SendMessages};
 
@@ -21,25 +21,20 @@ use crate::tracker::HttpTrackerResponse;
 const TIMEOUT_CONNECT_SECS: u64 = 5;
 
 pub struct Coordinator {
-    filer_addr: Addr<Filer>,
     commander_addr: Addr<Commander>,
     peer_addrs: HashMap<(Ipv4Addr, u16), Addr<Peer>>,
+    filer_addr: Addr<Filer>,
     info_hash: [u8; 20],
 }
 
 impl Coordinator {
-    pub fn new(
-        info: Info,
-        info_hash: [u8; 20],
-        filer_addr: Addr<Filer>,
-        ctx: &mut Context<Self>,
-    ) -> Self {
-        let commander_addr = Commander::new(info.clone(), ctx.address()).start();
+    pub fn new(info_hash: [u8; 20], filer_addr: Addr<Filer>) -> Self {
+        let commander_addr = Commander::new(info_hash).start();
 
         Self {
-            filer_addr,
             commander_addr,
             peer_addrs: HashMap::new(),
+            filer_addr,
             info_hash,
         }
     }
@@ -115,7 +110,8 @@ impl Actor for Coordinator {
 #[derive(Message)]
 #[rtype(result = "Result<(), PeerError>")]
 pub struct TrackerUpdate {
-    pub tracker_response: HttpTrackerResponse,
+    pub tracker_response: Option<HttpTrackerResponse>,
+    pub peers: Vec<(Ipv4Addr, u16)>,
 }
 
 #[derive(Message, Debug)]
@@ -137,8 +133,11 @@ impl Handler<TrackerUpdate> for Coordinator {
 
     fn handle(&mut self, msg: TrackerUpdate, ctx: &mut Context<Self>) -> Self::Result {
         debug!("Received TrackerUpdate");
+        /*let tracker_response = match msg.tracker_response {
+            Some(r) => r,
+            None => todo!("Handle case where we don't have http response")
+        }*/
         let new_peers: Vec<_> = msg
-            .tracker_response
             .peers
             .into_iter()
             .filter(|(ip_address, port)| !self.peer_addrs.contains_key(&(*ip_address, *port)))

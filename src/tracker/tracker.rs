@@ -29,7 +29,7 @@ pub struct Tracker {
 }
 
 impl Tracker {
-    pub fn new(metadata: Metadata, info_hash: [u8; 20]) -> Self {
+    pub fn with_metadata(metadata: Metadata, info_hash: [u8; 20]) -> Self {
         let mut peer_id = [0u8; 20];
         rand::rng().fill_bytes(&mut peer_id);
 
@@ -38,6 +38,10 @@ impl Tracker {
             info_hash,
             peer_id,
         }
+    }
+
+    pub fn with_uri(uri: String, info_hash: [u8; 20]) -> Self {
+        unimplemented!()
     }
 
     fn ask_http(
@@ -175,6 +179,7 @@ impl Actor for Tracker {
 #[rtype(result = "Result<HttpTrackerResponse, TrackerError>")]
 pub struct AskTracker {}
 
+#[derive(Debug)]
 pub enum TrackerError {
     HttpError(reqwest::Error),
     InvalidStatus(StatusCode),
