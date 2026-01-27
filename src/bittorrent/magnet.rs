@@ -1,7 +1,7 @@
 use crate::bittorrent::Uri;
 use hex::decode;
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Magnet {
     pub info_hash: [u8; 20],
     pub display_name: Option<String>,

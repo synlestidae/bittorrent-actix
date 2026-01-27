@@ -284,7 +284,7 @@ fn parse_tracker_response(body: Bencoding) -> Result<HttpTrackerResponse, Tracke
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct HttpTrackerResponse {
     pub interval: Option<u32>,
     pub min_interval: Option<u32>,

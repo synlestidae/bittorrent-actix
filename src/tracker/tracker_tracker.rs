@@ -6,16 +6,14 @@ use log::{error, info};
 use std::cmp::min;
 use tokio::time::sleep;
 
+use crate::event::Event;
 use crate::tracker::AskTracker;
-use crate::{
-    coordinator::TrackerUpdate,
-    tracker::{MetadataSource, Tracker},
-};
+use crate::tracker::{MetadataSource, Tracker};
 
 pub struct TrackerTracker {
     metadata_source: MetadataSource,
-    recipient: Recipient<TrackerUpdate>,
     handles: Vec<SpawnHandle>,
+    event_handler: Recipient<Event>,
 }
 
 impl Actor for TrackerTracker {
@@ -47,10 +45,10 @@ impl Actor for TrackerTracker {
 }
 
 impl TrackerTracker {
-    pub fn new(metadata_source: MetadataSource, recipient: Recipient<TrackerUpdate>) -> Self {
+    pub fn new(metadata_source: MetadataSource, event_handler: Recipient<Event>) -> Self {
         Self {
             metadata_source,
-            recipient,
+            event_handler,
             handles: vec![],
         }
     }
@@ -59,7 +57,7 @@ impl TrackerTracker {
         const DEFAULT_INTERVAL_SECS: u64 = 30;
 
         for addr in addrs.into_iter() {
-            let recipient = self.recipient.clone();
+            let event_handler = self.event_handler.clone();
 
             let handle = ctx.spawn(
                 async move {
@@ -93,10 +91,9 @@ impl TrackerTracker {
                             ));
                         }
 
-                        if let Err(err) = recipient
-                            .send(TrackerUpdate {
-                                tracker_response: Some(tracker_response),
-                                peers: Vec::new(),
+                        if let Err(err) = event_handler
+                            .send(Event::HttpTrackerResponse {
+                                response: tracker_response,
                             })
                             .await
                         {

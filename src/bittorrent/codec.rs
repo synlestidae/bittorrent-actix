@@ -12,8 +12,6 @@ use super::{BittorrentHandshake, BittorrentMessage, ExtensionMessage, ParseError
 pub struct BittorrentCodec {
     handshake_sent: bool,
     handshake_received: bool,
-    info_hash: [u8; 20],
-    peer_id: [u8; 20],
     extension_data_message: Option<ExtensionDataMessageState>,
 }
 
@@ -24,12 +22,10 @@ struct ExtensionDataMessageState {
 }
 
 impl BittorrentCodec {
-    pub fn new(info_hash: [u8; 20], peer_id: [u8; 20]) -> Self {
+    pub fn new() -> Self {
         Self {
             handshake_sent: false,
             handshake_received: false,
-            info_hash,
-            peer_id,
             extension_data_message: None,
         }
     }

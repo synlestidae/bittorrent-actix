@@ -13,15 +13,19 @@ use sha1::{Digest, Sha1};
 
 mod bittorrent;
 mod commander;
-mod coordinator;
+mod event;
 mod filer;
 mod init;
 mod peer;
+mod peer_swarm;
 mod tracker;
+mod piece_uploader;
+mod piece_downloader;
 
 use crate::bittorrent::{Bencoding, Magnet, Metadata, Position, Uri};
+use crate::event::EventHandler;
 use crate::filer::PieceFile;
-use crate::init::Init;
+use crate::init::{Init, Ping};
 use crate::tracker::MetadataSource;
 
 #[actix::main(worker_threads = 50, max_blocking_threads = 50)]
@@ -53,7 +57,7 @@ async fn main() {
         // then the trackers start a swarm
         // but we don't have
 
-        unimplemented!()
+        unimplemented!("Make this work: {:?}", magnet)
     } else {
         // Open the file to decode metadata
         let handle = File::open(metadata_file).unwrap();
@@ -77,19 +81,19 @@ async fn main() {
             metadata,
         };
 
-        let init = Init::new(metadata_source, piece_file);
+        let event_handler = EventHandler::new().start();
+
+        let init = Init::new(metadata_source, event_handler);
         init.start()
     };
 
+    let fut = init_addr.send(Ping {});
+
     debug!("Starting system");
 
-    /*debug!("Sending InitDownload");
-    if let Err(err) = init_addr.send(InitDownload {}).await {
-        error!("Initialisation error: {}", err);
-        exit(1)
-    }*/
-
     pending::<()>().await;
+
+    fut.await.expect("expected ping")
 }
 
 fn get_info_hash(handle: &mut File, position: Position) -> [u8; 20] {
