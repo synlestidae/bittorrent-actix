@@ -4,7 +4,12 @@ use actix::prelude::*;
 use bitvec::{order::Msb0, vec::BitVec};
 use std::cmp::min;
 
-use crate::{bittorrent::BittorrentMessage, event::{Event, EventHandler, RegId, Registration}, piece_downloader::PieceDownloader, piece_uploader::PieceUploader};
+use crate::{
+    bittorrent::BittorrentMessage,
+    event::{Event, EventHandler, RegId, Registration},
+    piece_downloader::PieceDownloader,
+    piece_uploader::PieceUploader,
+};
 
 use log::error;
 
@@ -69,7 +74,15 @@ impl Commander {
     }
 
     fn register(&self, ctx: &mut Context<Self>) {
-        self.event_handler.send(Registration::Activate { id: RegId::next(), predicate: None, recipient: ctx.address().recipient() });
+        let fut = self.event_handler.send(Registration::Activate {
+            id: RegId::next(),
+            predicate: None,
+            recipient: ctx.address().recipient(),
+        });
+
+        ctx.spawn(fut.into_actor(self).map(|result, _, _| {
+            result.expect("unable to register commander");
+        }));
     }
 }
 
@@ -97,7 +110,7 @@ impl Handler<Event> for Commander {
                 if let Some(peer) = self.peers.get_mut(&(ip_address, port)) {
                     handle_incoming_messages(peer, messages);
                 }
-            },
+            }
             Event::PeerDeath { ip_address, port } => {
                 self.peers.remove(&(ip_address, port));
             }
@@ -128,7 +141,7 @@ fn handle_incoming_messages(peer_state: &mut PeerState, messages: Vec<Bittorrent
             BittorrentMessage::Handshake { .. } => {
                 peer_state.handshake_received = true;
             }
-            _ => {},
+            _ => {}
         }
     }
 }

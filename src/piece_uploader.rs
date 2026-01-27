@@ -1,12 +1,10 @@
 use actix::prelude::*;
 
-pub struct PieceUploader {
-}
+pub struct PieceUploader {}
 
 impl PieceUploader {
     pub fn new() -> Self {
-        Self {
-        }
+        Self {}
     }
 }
 

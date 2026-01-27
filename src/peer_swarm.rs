@@ -35,16 +35,12 @@ impl Handler<Event> for PeerSwarm {
     type Result = ();
 
     fn handle(&mut self, msg: Event, _ctx: &mut Self::Context) -> Self::Result {
-        let tracker_response = match msg {
-            Event::HttpTrackerResponse { response } => response,
+        let peers = match msg {
+            Event::PeerList { peers } => peers,
             _ => return,
         };
         let peers_already_have = self.peers.keys().cloned().collect::<HashSet<_>>();
-        let response_peers = tracker_response
-            .peers
-            .iter()
-            .cloned()
-            .collect::<HashSet<_>>();
+        let response_peers = peers.iter().cloned().collect::<HashSet<_>>();
 
         let max = MAX_PEERS - self.peers.len(); // TODO ensure no underflow
         let new_peers_addrs = response_peers.difference(&peers_already_have).take(max);

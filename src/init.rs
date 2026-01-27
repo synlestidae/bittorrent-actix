@@ -2,6 +2,7 @@ use actix::prelude::*;
 
 use crate::commander::Commander;
 use crate::event::EventHandler;
+use crate::metadata_coordinator::MetadataCoordinator;
 use crate::peer_swarm::PeerSwarm;
 use crate::tracker::MetadataSource;
 use crate::tracker::TrackerTracker;
@@ -10,6 +11,7 @@ pub struct Init {
     tracker_tracker: Addr<TrackerTracker>,
     peer_swarm: Addr<PeerSwarm>,
     commander: Addr<Commander>,
+    metadata_coordinator: Addr<MetadataCoordinator>,
 }
 
 impl Init {
@@ -21,10 +23,13 @@ impl Init {
 
         let commander = Commander::new(event_handler.clone());
 
+        let metadata_coordinator = MetadataCoordinator::new(event_handler.clone());
+
         Self {
             tracker_tracker: tracker_tracker.start(),
             peer_swarm: peer_swarm.start(),
             commander: commander.start(),
+            metadata_coordinator: metadata_coordinator.start(),
         }
     }
 }

@@ -1,4 +1,4 @@
-use actix::{prelude::*, WeakRecipient};
+use actix::{WeakRecipient, prelude::*};
 use tokio::task::JoinSet;
 
 use crate::event::{Event, event::Registration};
@@ -24,11 +24,11 @@ impl Handler<Event> for EventHandler {
         let mut joinset = JoinSet::new();
 
         self.recipients.retain(|weak_recipient| {
-            // doing two things here - sending message and clearing out 
+            // doing two things here - sending message and clearing out
             // recipients who are dropped (couldn't upgrade)
             if let Some(r) = weak_recipient.upgrade() {
                 joinset.spawn(r.send(msg.clone()));
-                return true
+                return true;
             }
 
             false
@@ -57,6 +57,5 @@ impl Handler<Registration> for EventHandler {
             let weak_recipient = WeakRecipient::from(recipient);
             self.recipients.push(weak_recipient);
         }
-
     }
 }

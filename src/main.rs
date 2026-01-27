@@ -16,11 +16,13 @@ mod commander;
 mod event;
 mod filer;
 mod init;
+mod metadata_coordinator;
+mod metadata_downloader;
 mod peer;
 mod peer_swarm;
-mod tracker;
-mod piece_uploader;
 mod piece_downloader;
+mod piece_uploader;
+mod tracker;
 
 use crate::bittorrent::{Bencoding, Magnet, Metadata, Position, Uri};
 use crate::event::EventHandler;
