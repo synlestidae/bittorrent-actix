@@ -17,13 +17,13 @@ pub struct Init {
 impl Init {
     pub fn new(metadata_source: MetadataSource, event_handler: Addr<EventHandler>) -> Self {
         let tracker_tracker =
-            TrackerTracker::new(metadata_source, event_handler.clone().recipient());
+            TrackerTracker::new(metadata_source.clone(), event_handler.clone().recipient());
 
         let peer_swarm = PeerSwarm::new(event_handler.clone());
 
         let commander = Commander::new(event_handler.clone());
 
-        let metadata_coordinator = MetadataCoordinator::new(event_handler.clone());
+        let metadata_coordinator = MetadataCoordinator::new(metadata_source, event_handler.clone());
 
         Self {
             tracker_tracker: tracker_tracker.start(),

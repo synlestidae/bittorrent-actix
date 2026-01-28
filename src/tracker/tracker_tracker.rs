@@ -92,8 +92,8 @@ impl TrackerTracker {
                         }
 
                         if let Err(err) = event_handler
-                            .send(Event::HttpTrackerResponse {
-                                response: tracker_response,
+                            .send(Event::PeerList {
+                                peers: tracker_response.peers,
                             })
                             .await
                         {

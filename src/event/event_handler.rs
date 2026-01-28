@@ -1,7 +1,12 @@
+use std::net::Ipv4Addr;
+
 use actix::{WeakRecipient, prelude::*};
 use tokio::task::JoinSet;
 
-use crate::event::{Event, event::Registration};
+use crate::{
+    bittorrent::BittorrentMessage,
+    event::{Event, event::Registration},
+};
 
 pub struct EventHandler {
     recipients: Vec<WeakRecipient<Event>>,
@@ -41,6 +46,24 @@ impl Handler<Event> for EventHandler {
                 }
             }
         }))
+    }
+}
+
+#[derive(Message, Clone)]
+#[rtype(result = "()")]
+pub enum Command {
+    PeerSendMessages {
+        ip_address: Ipv4Addr,
+        port: u16,
+        messages: Vec<BittorrentMessage>,
+    },
+}
+
+impl Handler<Command> for EventHandler {
+    type Result = ();
+
+    fn handle(&mut self, msg: Command, ctx: &mut Self::Context) -> Self::Result {
+        // damn what was I doing again?
     }
 }
 
