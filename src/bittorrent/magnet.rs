@@ -1,12 +1,13 @@
 use crate::bittorrent::Uri;
 use hex::decode;
+use log::trace;
 
 #[derive(Clone, Debug)]
 pub struct Magnet {
     pub info_hash: [u8; 20],
     pub display_name: Option<String>,
     pub trackers: Vec<String>,
-    pub exact_length: usize,
+    pub exact_length: Option<usize>,
 }
 
 #[derive(Debug)]
@@ -16,25 +17,32 @@ pub enum ParseErr {
 
 impl Magnet {
     pub fn parse(uri: Uri) -> Result<Self, ParseErr> {
+        trace!("Parsing {:?}", uri);
+
         let display_name = uri.query("dn").get(0).map(|dn| dn.clone());
         let trackers = uri.query("tr").iter().cloned().collect();
 
-        let mut xt = match uri.query("xt").first().map(|xt| xt.clone()) {
+        trace!("display_name: {:?}", display_name);
+        trace!("trackers: {:?}", trackers);
+
+        let mut exact_topic = match uri.query("xt").first().map(|xt| xt.clone()) {
             Some(xt) => xt,
             None => unimplemented!(),
         };
 
-        if !xt.starts_with("urn:btih:") {
+        if !exact_topic.starts_with("urn:btih:") {
             return Err(ParseErr::InvalidXt {
                 message: "urn must start with 'urn:btih:'",
             });
         }
 
-        xt.replace_range(0.."urn:btih".len(), "");
+        exact_topic.replace_range(0.."urn:btih:".len(), "");
 
-        let data = match decode(xt) {
+        trace!("parsing file hash: {}", exact_topic);
+
+        let data = match decode(exact_topic) {
             Ok(d) => d,
-            Err(err) => unimplemented!(),
+            Err(err) => unimplemented!("error decoding: {}", err),
         };
 
         if data.len() != 20 {
@@ -46,8 +54,8 @@ impl Magnet {
         data.iter().enumerate().for_each(|(i, b)| info_hash[i] = *b);
 
         let exact_length = match uri.query("xl").first() {
-            Some(xl) => xl.parse::<usize>().unwrap(),
-            None => unimplemented!(),
+            Some(xl) => Some(xl.parse::<usize>().unwrap()),
+            None => None,
         };
 
         Ok(Magnet {

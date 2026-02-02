@@ -6,12 +6,15 @@ use log::{error, info};
 use std::cmp::min;
 use tokio::time::sleep;
 
+use crate::bittorrent::{Magnet, Metadata};
 use crate::event::Event;
 use crate::tracker::AskTracker;
-use crate::tracker::{MetadataSource, Tracker};
+use crate::tracker::Tracker;
 
 pub struct TrackerTracker {
-    metadata_source: MetadataSource,
+    metadata: Option<Metadata>,
+    magnet: Option<Magnet>,
+    info_hash: [u8; 20],
     handles: Vec<SpawnHandle>,
     event_handler: Recipient<Event>,
 }
@@ -20,24 +23,17 @@ impl Actor for TrackerTracker {
     type Context = Context<Self>;
 
     fn started(&mut self, ctx: &mut Self::Context) {
-        let tracker_addrs = match self.metadata_source {
-            MetadataSource::Magnet {
-                ref magnet,
-                ref info_hash,
-            } => magnet
+        let tracker_addrs = if let Some(metadata) = &self.metadata {
+            vec![Tracker::with_metadata(metadata.clone(), self.info_hash.clone()).start()]
+        } else if let Some(magnet) = &self.magnet {
+            magnet
                 .trackers
                 .iter()
                 .cloned()
-                .map(|t| Tracker::with_uri(t, info_hash.clone()).start())
-                .collect(),
-            MetadataSource::Metadata {
-                ref metadata,
-                ref info_hash,
-            } => {
-                let metadata = metadata.clone();
-
-                vec![Tracker::with_metadata(metadata, info_hash.clone()).start()]
-            }
+                .map(|t| Tracker::with_uri(t, self.info_hash.clone()).start())
+                .collect()
+        } else {
+            unreachable!("should have either a magnet or metadata")
         };
 
         self.spawn_trackers(tracker_addrs, ctx);
@@ -45,11 +41,31 @@ impl Actor for TrackerTracker {
 }
 
 impl TrackerTracker {
-    pub fn new(metadata_source: MetadataSource, event_handler: Recipient<Event>) -> Self {
+    pub fn with_metadata(
+        info_hash: [u8; 20],
+        metadata: Metadata,
+        event_handler: Recipient<Event>,
+    ) -> Self {
         Self {
-            metadata_source,
+            metadata: Some(metadata),
+            magnet: None,
+            info_hash,
+            handles: Vec::new(),
             event_handler,
-            handles: vec![],
+        }
+    }
+
+    pub fn with_magnet(
+        info_hash: [u8; 20],
+        magnet: Magnet,
+        event_handler: Recipient<Event>,
+    ) -> Self {
+        Self {
+            metadata: None,
+            magnet: Some(magnet),
+            info_hash,
+            handles: Vec::new(),
+            event_handler,
         }
     }
 

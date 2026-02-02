@@ -1,9 +1,16 @@
-use std::{net::Ipv4Addr, time::Duration};
+use std::{
+    io::{BufReader, Cursor},
+    net::Ipv4Addr,
+    time::Duration,
+};
 
 use actix::prelude::*;
 
+use log::error;
+use sha1::{Digest, Sha1};
+
 use crate::{
-    bittorrent::{BittorrentMessage, ExtensionMessage},
+    bittorrent::{Bencoding, BittorrentMessage, ExtensionMessage, Info},
     event::{Command, Event, EventHandler, EventPredicate, RegId, Registration},
 };
 
@@ -12,18 +19,20 @@ pub struct MetadataDownloader {
     port: u16,
     event_handler: Addr<EventHandler>,
     data: Vec<u8>,
-    metadata_size: usize,
+    exact_length: Option<usize>,
     next_piece: usize,
     info_hash: [u8; 20],
     request_made: bool,
 }
+
+const BLOCK_SIZE: usize = 16384;
 
 impl MetadataDownloader {
     pub fn new(
         addr: (Ipv4Addr, u16),
         event_handler: Addr<EventHandler>,
         info_hash: [u8; 20],
-        metadata_size: usize,
+        exact_length: Option<usize>,
     ) -> Self {
         let (ip_address, port) = addr;
 
@@ -32,7 +41,7 @@ impl MetadataDownloader {
             port,
             event_handler,
             data: Vec::new(),
-            metadata_size,
+            exact_length,
             info_hash,
             next_piece: 0,
             request_made: false,
@@ -62,8 +71,40 @@ impl MetadataDownloader {
         });
     }
 
-    fn finalise(&mut self, ctx: &mut Context<Self>) {
-        self.data
+    fn try_finalise(&mut self, ctx: &mut Context<Self>) {
+        // we assume the length is OK
+        // first check the hash
+        let mut digest = Sha1::new();
+        digest.update(&self.data);
+        let info_hash = digest.finalize();
+
+        if info_hash.to_vec() != self.info_hash.to_vec() {
+            return; // TODO log something
+        }
+
+        let cursor = Cursor::new(self.data.clone());
+        let mut bufreader = BufReader::new(cursor);
+        let bencoding = match Bencoding::deserialize(&mut bufreader) {
+            Ok(b) => b,
+            Err(err) => {
+                error!("Error parsing info: {:?}", err);
+                self.data = vec![];
+                return;
+            }
+        };
+        let info = match Info::parse(bencoding) {
+            Ok(i) => i,
+            Err(err) => {
+                error!("Error parsing info: {:?}", err);
+                self.data = vec![];
+                return;
+            }
+        };
+
+        let fut = self.event_handler.send(Event::Metadata { info });
+        ctx.spawn(fut.into_actor(self).map(|result, _, _| {
+            result.expect("unable to deliver metadata");
+        }));
     }
 
     fn request(&mut self, ctx: &mut Context<Self>) {
@@ -71,14 +112,17 @@ impl MetadataDownloader {
             return;
         }
 
+        let exact_length = match self.exact_length {
+            Some(l) => l,
+            None => return,
+        };
+
         self.request_made = true;
 
         let mut messages = vec![];
         let mut piece_index: u32 = 0;
 
-        const BLOCK_SIZE: usize = 16384;
-
-        while piece_index as usize * BLOCK_SIZE < self.metadata_size {
+        while piece_index as usize * BLOCK_SIZE < exact_length {
             messages.push(BittorrentMessage::ExtensionMessage {
                 message: ExtensionMessage::Request { piece_index },
             });
@@ -146,11 +190,16 @@ impl Handler<Event> for MetadataDownloader {
             }
         }
 
-        if self.data.len() == self.metadata_size {
-            self.finalise(ctx);
+        let exact_length = match self.exact_length {
+            Some(l) => l,
+            None => return,
+        };
+
+        if self.data.len() == exact_length {
+            self.try_finalise(ctx);
         }
 
-        if self.data.len() >= self.metadata_size {
+        if self.data.len() >= exact_length {
             self.next_piece = 0;
             self.data = vec![];
         }

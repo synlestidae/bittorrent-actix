@@ -17,14 +17,13 @@ const EXTENSION_RESERVED: u64 = 0b0000_1000_0000_0000_0000_0000;
 
 const EXTENSION_MSG_ID: u8 = 20;
 
-/*const EXTENSION_REQUEST: i64 = 0;
-const EXTENSION_DATA: i64 = 1;
-const EXTENSION_REJECT: i64 = 2;*/
-
 #[derive(Debug, Clone)]
 pub enum BittorrentMessage {
     Handshake {
         handshake: BittorrentHandshake,
+    },
+    ExtensionHandshake {
+        metadata_size: Option<u32>,
     },
     KeepAlive,
     Choke,

@@ -101,14 +101,11 @@ impl Uri {
     }
 
     fn parse_port(uri: &[u8], i: &mut usize) -> Result<Option<u16>, ParseErr> {
-        println!("parse port {}", *i);
         if *i == uri.len() {
-            println!("end of shit");
             return Ok(None);
         }
 
         if uri[*i] != b':' {
-            println!("end of colon");
             return Ok(None);
         }
         Self::eat(uri, i, ":")?;
@@ -143,12 +140,10 @@ impl Uri {
         if *i == uri.len() {
             return Ok(None);
         }
-        println!("parse_path: {}", *i);
         while *i < uri.len() && uri[*i] != b'?' {
             *i += 1;
         }
         if *i == start {
-            println!("no path");
             return Ok(None);
         }
         let path = match String::from_utf8(uri[start..*i].to_vec()) {
@@ -181,7 +176,6 @@ impl Uri {
             parser.push(uri[*i]);
             if parser.done {
                 query.push(parser.complete().unwrap());
-                println!("Query is {:?}", query);
             }
 
             *i += 1;
@@ -236,44 +230,35 @@ impl KeyValueParser {
     }
 
     fn push(&mut self, byte: u8) {
-        println!("Byte {}", byte as char);
         if byte == b'&' {
-            println!("An and");
             self.done = true;
             return;
         }
         if byte == b'%' && !self.decoding {
-            println!("An percent");
             self.decoding = true;
             return;
         }
         if self.decoding && self.encoded.len() == 1 {
-            println!("An decode");
             self.encoded.push(byte);
             return self.decode();
         }
         if self.decoding && self.encoded.len() == 0 {
-            println!("NOW DECODE");
             self.encoded.push(byte);
             return;
         }
         if byte == b'=' {
-            println!("NOW VAL");
             self.parsing_key = false;
             return;
         }
         if self.parsing_key {
-            println!("PUSH ON KEY {}", byte as char);
             self.key.push(byte);
         } else {
-            println!("PUSH ON VAL {}", byte as char);
             self.val.push(byte);
         }
     }
 
     fn decode(&mut self) {
         let digits = String::from_utf8(self.encoded.clone()).unwrap();
-        println!("decode {:?}", digits);
         let number = u8::from_str_radix(&digits, 16).unwrap();
 
         self.encoded = vec![];

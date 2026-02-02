@@ -37,7 +37,7 @@ impl From<ParseErr> for UdpClientErr {
 impl UdpClient {
     pub async fn connect(host: &str, port: u16) -> Result<Self, UdpClientErr> {
         let socket = UdpSocket::bind("0.0.0.0:0").await?;
-        socket.connect((host, port));
+        socket.connect((host, port)).await?;
 
         let timeout = Duration::from_secs(30);
 

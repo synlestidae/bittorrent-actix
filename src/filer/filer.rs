@@ -35,7 +35,10 @@ impl Filer {
 
         ctx.spawn(Box::pin(
             async move {
-                file_writer.write_to_disk();
+                file_writer
+                    .write_to_disk()
+                    .await
+                    .expect("unable to write to file");
             }
             .into_actor(self),
         ));

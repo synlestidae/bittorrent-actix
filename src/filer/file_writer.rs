@@ -21,6 +21,7 @@ pub struct FileWriter {
     info: Info,
 }
 
+#[derive(Debug)]
 pub enum FileWriterError {
     Io { error: Error },
     PieceNotFound { piece_index: u32 },

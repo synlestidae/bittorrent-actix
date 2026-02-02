@@ -2,9 +2,7 @@ use actix::prelude::*;
 use std::net::Ipv4Addr;
 
 use crate::bittorrent::BittorrentMessage;
-use crate::bittorrent::Metadata;
-use crate::peer::Peer;
-use crate::tracker::HttpTrackerResponse;
+use crate::bittorrent::Info;
 
 #[derive(Message, Clone)]
 #[rtype(result = "()")]
@@ -13,7 +11,7 @@ pub enum Event {
         peers: Vec<(Ipv4Addr, u16)>,
     },
     Metadata {
-        metadata: Metadata,
+        info: Info,
     },
     PeerConnect {
         ip_address: Ipv4Addr,

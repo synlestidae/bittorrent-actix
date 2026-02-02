@@ -1,5 +1,6 @@
 #![feature(bufreader_peek)]
 #![feature(string_from_utf8_lossy_owned)]
+#![deny(unused_must_use)]
 use actix::prelude::*;
 use std::env::args;
 use std::fs::File;
@@ -27,7 +28,7 @@ mod tracker;
 use crate::bittorrent::{Bencoding, Magnet, Metadata, Position, Uri};
 use crate::event::EventHandler;
 use crate::filer::PieceFile;
-use crate::init::{Init, Ping};
+use crate::init::{Init, InitOptions, Ping};
 use crate::tracker::MetadataSource;
 
 #[actix::main(worker_threads = 50, max_blocking_threads = 50)]
@@ -78,14 +79,10 @@ async fn main() {
         let mut piece_file = PieceFile::open(&filename).await.unwrap();
         piece_file.initialise().await.unwrap();
 
-        let metadata_source = MetadataSource::Metadata {
-            info_hash,
-            metadata,
-        };
-
         let event_handler = EventHandler::new().start();
+        let options = InitOptions::Metadata(metadata);
+        let init = Init::with_metadata(info_hash, options, event_handler);
 
-        let init = Init::new(metadata_source, event_handler);
         init.start()
     };
 
@@ -100,17 +97,15 @@ async fn main() {
 
 fn get_info_hash(handle: &mut File, position: Position) -> [u8; 20] {
     let mut buffer = vec![0; position.length as usize];
-    handle.seek(SeekFrom::Start(position.offset));
-    handle.read_exact(&mut buffer);
+    handle
+        .seek(SeekFrom::Start(position.offset))
+        .expect("unable to read info hash");
+    handle
+        .read_exact(&mut buffer)
+        .expect("unable to read info hash");
 
     let mut hasher = Sha1::new();
     hasher.update(buffer);
 
     hasher.finalize().into()
 }
-
-struct Download {}
-
-struct Tracker {}
-
-struct Peer {}
