@@ -7,9 +7,6 @@ use std::io::Cursor;
 use super::ids::*;
 use crate::bittorrent::Bencoding;
 use crate::bittorrent::NOT_INTERESTED;
-use byteorder::BigEndian;
-use byteorder::ReadBytesExt;
-use std::io::Read;
 use tokio_util::bytes::BufMut;
 
 // Bit 20 is set per https://www.bittorrent.org/beps/bep_0010.html
