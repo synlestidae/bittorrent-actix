@@ -84,7 +84,7 @@ impl MetadataDownloader {
 
         let cursor = Cursor::new(self.data.clone());
         let mut bufreader = BufReader::new(cursor);
-        let bencoding = match Bencoding::deserialize(&mut bufreader) {
+        let bencoding = match Bencoding::deserialise(&mut bufreader) {
             Ok(b) => b,
             Err(err) => {
                 error!("Error parsing info: {:?}", err);
@@ -123,7 +123,7 @@ impl MetadataDownloader {
         let mut piece_index: u32 = 0;
 
         while piece_index as usize * BLOCK_SIZE < exact_length {
-            messages.push(BittorrentMessage::ExtensionMessage {
+            messages.push(BittorrentMessage::Extension {
                 message: ExtensionMessage::Request { piece_index },
             });
             piece_index += 1;
@@ -168,7 +168,7 @@ impl Handler<Event> for MetadataDownloader {
             .into_iter()
             .filter_map(|m| {
                 match m {
-                    BittorrentMessage::ExtensionMessage {
+                    BittorrentMessage::Extension {
                         message:
                             ExtensionMessage::Data {
                                 piece_index,

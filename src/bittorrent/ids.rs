@@ -10,6 +10,7 @@ pub const CANCEL: u8 = 8;
 pub const PORT: u8 = 9;
 
 pub const EXTENSION: u8 = 20;
+
 pub const EXT_HANDSHAKE: u8 = 0;
 
 pub const EXT_REQUEST: u8 = 0;

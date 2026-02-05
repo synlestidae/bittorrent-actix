@@ -32,7 +32,7 @@ pub enum Bencoding {
 }
 
 impl Bencoding {
-    pub fn serialize<W: Write>(&self, output: &mut W) -> Result<(), IOErr> {
+    pub fn serialise<W: Write>(&self, output: &mut W) -> Result<(), IOErr> {
         match self {
             Bencoding::Integer { integer, .. } => {
                 output.write_all("i".as_bytes())?;
@@ -47,7 +47,7 @@ impl Bencoding {
             Bencoding::List { list, .. } => {
                 output.write_all("l".as_bytes())?;
                 for element in list.iter() {
-                    element.serialize(output)?;
+                    element.serialise(output)?;
                 }
                 output.write_all("e".as_bytes())?;
             }
@@ -58,8 +58,8 @@ impl Bencoding {
                         byte_string: key.clone(),
                         position: None,
                     }
-                    .serialize(output)?;
-                    value.serialize(output)?;
+                    .serialise(output)?;
+                    value.serialise(output)?;
                 }
                 output.write_all("e".as_bytes())?;
             }
@@ -68,7 +68,7 @@ impl Bencoding {
         Ok(())
     }
 
-    pub fn deserialize<R: Read + Seek>(reader: &mut BufReader<R>) -> Result<Bencoding, ()> {
+    pub fn deserialise<R: Read + Seek>(reader: &mut BufReader<R>) -> Result<Bencoding, ()> {
         let offset = reader.stream_position().unwrap(); // TODO
 
         match peek_char(reader) {
@@ -97,7 +97,7 @@ impl Bencoding {
 
                 let mut list = Vec::new();
                 while peek_char(reader) != Some('e') {
-                    let element = Bencoding::deserialize(reader)?;
+                    let element = Bencoding::deserialise(reader)?;
                     list.push(element);
                 }
 
@@ -121,7 +121,7 @@ impl Bencoding {
 
                 while peek_char(reader) != Some('e') {
                     let key = read_string(reader)?;
-                    let value = Bencoding::deserialize(reader)?;
+                    let value = Bencoding::deserialise(reader)?;
 
                     dictionary.insert(key, value);
                 }
@@ -238,11 +238,11 @@ mod test {
     use std::io::{BufReader, Cursor, Seek};
 
     #[test]
-    fn test_deserialize_byte_string_spam() {
+    fn test_deserialise_byte_string_spam() {
         let mut cursor = BufReader::new(Cursor::new("4:spam".as_bytes().to_vec()));
 
         assert_eq!(
-            Bencoding::deserialize(&mut cursor),
+            Bencoding::deserialise(&mut cursor),
             Ok(Bencoding::ByteString {
                 byte_string: "spam".as_bytes().to_vec(),
                 position: Some(Position {
@@ -258,11 +258,11 @@ mod test {
     }
 
     #[test]
-    fn test_deserialize_integer_3() {
+    fn test_deserialise_integer_3() {
         let mut cursor = BufReader::new(Cursor::new("i3e".as_bytes().to_vec()));
 
         assert_eq!(
-            Bencoding::deserialize(&mut cursor),
+            Bencoding::deserialise(&mut cursor),
             Ok(Bencoding::Integer {
                 integer: 3,
                 position: Some(Position {
@@ -278,11 +278,11 @@ mod test {
     }
 
     #[test]
-    fn test_deserialize_integer_negative_3() {
+    fn test_deserialise_integer_negative_3() {
         let mut cursor = BufReader::new(Cursor::new("i-3e".as_bytes().to_vec()));
 
         assert_eq!(
-            Bencoding::deserialize(&mut cursor),
+            Bencoding::deserialise(&mut cursor),
             Ok(Bencoding::Integer {
                 integer: -3,
                 position: Some(Position {
@@ -298,11 +298,11 @@ mod test {
     }
 
     #[test]
-    fn test_deserialize_list_empty() {
+    fn test_deserialise_list_empty() {
         let mut cursor = BufReader::new(Cursor::new("le".as_bytes().to_vec()));
 
         assert_eq!(
-            Bencoding::deserialize(&mut cursor),
+            Bencoding::deserialise(&mut cursor),
             Ok(Bencoding::List {
                 list: Vec::new(),
                 position: Some(Position {
@@ -318,11 +318,11 @@ mod test {
     }
 
     #[test]
-    fn test_deserialize_list_spam_eggs() {
+    fn test_deserialise_list_spam_eggs() {
         let mut cursor = BufReader::new(Cursor::new("l4:spam4:eggse".as_bytes().to_vec()));
 
         assert_eq!(
-            Bencoding::deserialize(&mut cursor),
+            Bencoding::deserialise(&mut cursor),
             Ok(Bencoding::List {
                 list: vec![
                     Bencoding::ByteString {

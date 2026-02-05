@@ -84,7 +84,7 @@ impl Tracker {
 
                 let cursor = Cursor::new(data);
                 let mut buf_reader = BufReader::new(cursor);
-                let bencoding = Bencoding::deserialize(&mut buf_reader).unwrap();
+                let bencoding = Bencoding::deserialise(&mut buf_reader).unwrap();
                 let tracker_response = parse_tracker_response(bencoding)?;
                 debug!("Tracker response: {:?}", tracker_response);
 

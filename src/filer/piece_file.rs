@@ -7,7 +7,7 @@ use tokio::io::{self, AsyncBufReadExt};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, BufReader};
 use tokio::sync::Mutex;
 
-use crate::bittorrent::{BittorrentMessage, PIECE};
+use crate::bittorrent::{BittorrentMessage, MessageSerialiser, PIECE};
 use crate::filer::FilePool;
 
 pub const MAGIC_NUMBER: &'static [u8; 8] = b"PIECESv1";
@@ -17,6 +17,7 @@ pub struct PieceFile {
     index: Arc<Mutex<BTreeMap<u32, u64>>>,
     file_pool: FilePool,
     highest_piece: i32,
+    serialiser: MessageSerialiser,
 }
 
 const BITTORRENT_PIECE_MSG_ID: u8 = 7;
@@ -29,6 +30,7 @@ impl PieceFile {
             file_pool,
             index: Arc::new(Mutex::new(BTreeMap::new())),
             highest_piece: -1,
+            serialiser: MessageSerialiser::new(),
         })
     }
 
@@ -135,7 +137,7 @@ impl PieceFile {
             begin: 0,
             block: data,
         };
-        let data = piece.serialize();
+        let data = self.serialiser.serialise(&piece);
         let index_arc = self.index.clone();
         let mut file_pool = self.file_pool.clone();
 

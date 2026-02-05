@@ -6,6 +6,8 @@ use tokio::io;
 use tokio_util::bytes::BytesMut;
 use tokio_util::codec::{Decoder, Encoder};
 
+use crate::bittorrent::message::{MessageDeserialiser, MessageSerialiser};
+
 use super::{BittorrentHandshake, BittorrentMessage, ExtensionMessage, ParseError};
 
 #[derive(Clone)]
@@ -13,6 +15,8 @@ pub struct BittorrentCodec {
     handshake_sent: bool,
     handshake_received: bool,
     extension_data_message: Option<ExtensionDataMessageState>,
+    serialiser: MessageSerialiser,
+    deserialiser: MessageDeserialiser,
 }
 
 #[derive(Clone)]
@@ -27,6 +31,8 @@ impl BittorrentCodec {
             handshake_sent: false,
             handshake_received: false,
             extension_data_message: None,
+            serialiser: MessageSerialiser::new(),
+            deserialiser: MessageDeserialiser::new(),
         }
     }
 }
@@ -52,7 +58,7 @@ impl Decoder for BittorrentCodec {
 
             let data = src.split_to(total_size as usize).to_vec();
 
-            return Ok(Some(vec![BittorrentMessage::ExtensionMessage {
+            return Ok(Some(vec![BittorrentMessage::Extension {
                 message: ExtensionMessage::Data {
                     piece_index,
                     total_size,
@@ -71,8 +77,12 @@ impl Decoder for BittorrentCodec {
             drop(src.split_to(1));
 
             let data = src.split_to(handshake_len);
-            if let Some(handshake) = BittorrentHandshake::deserialise(&data.to_vec())? {
+            if let BittorrentMessage::Handshake { handshake } =
+                self.deserialiser.deserialise(&data.to_vec())?
+            {
                 messages.push(BittorrentMessage::Handshake { handshake });
+            } else {
+                todo!("handshake should be first")
             }
 
             return Ok(None);
@@ -92,9 +102,9 @@ impl Decoder for BittorrentCodec {
             }
 
             // read the message, but data will be empty
-            let msg = BittorrentMessage::deserialize(&src.split_to(message_end))?;
+            let msg = self.deserialiser.deserialise(&src.split_to(message_end))?;
             match msg {
-                BittorrentMessage::ExtensionMessage {
+                BittorrentMessage::Extension {
                     message:
                         ExtensionMessage::Data {
                             piece_index,
@@ -121,7 +131,7 @@ impl Decoder for BittorrentCodec {
                         data,
                     };
 
-                    return Ok(Some(vec![BittorrentMessage::ExtensionMessage { message }]));
+                    return Ok(Some(vec![BittorrentMessage::Extension { message }]));
                 }
                 _ => (),
             }
@@ -142,7 +152,7 @@ impl Encoder<BittorrentMessage> for BittorrentCodec {
     fn encode(&mut self, item: BittorrentMessage, dst: &mut BytesMut) -> Result<(), Self::Error> {
         trace!("Sending {:?}", item);
 
-        dst.extend_from_slice(&item.serialize());
+        dst.extend_from_slice(&self.serialiser.serialise(&item));
 
         Ok(())
     }

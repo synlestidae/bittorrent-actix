@@ -85,7 +85,6 @@ impl Handler<Event> for MetadataCoordinator {
             return;
         }
         let handshake = &handshakes[0];
-
         if !handshake.extension() {
             return;
         }

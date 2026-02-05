@@ -65,7 +65,7 @@ async fn main() {
         // Open the file to decode metadata
         let handle = File::open(metadata_file).unwrap();
         let mut reader = BufReader::new(handle);
-        let file = Bencoding::deserialize(&mut reader).unwrap();
+        let file = Bencoding::deserialise(&mut reader).unwrap();
         drop(reader);
 
         let metadata = Metadata::parse(file).unwrap();

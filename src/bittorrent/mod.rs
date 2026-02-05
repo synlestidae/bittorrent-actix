@@ -12,7 +12,8 @@ pub use bencoding::Position;
 pub use codec::{BittorrentCodec, DecoderError};
 pub use magnet::Magnet;
 pub use message::{
-    BittorrentHandshake, BittorrentMessage, ExtensionMessage, ExtensionRequest, ParseError,
+    BittorrentHandshake, BittorrentMessage, ExtensionMessage, ExtensionRequest,
+    MessageDeserialiser, MessageSerialiser, ParseError,
 };
 pub use metadata::Info;
 pub use metadata::Metadata;
