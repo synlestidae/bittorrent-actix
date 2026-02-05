@@ -8,6 +8,9 @@ use super::ids::*;
 use crate::bittorrent::Bencoding;
 use crate::bittorrent::NOT_INTERESTED;
 use tokio_util::bytes::BufMut;
+use byteorder::BigEndian;
+use byteorder::ReadBytesExt;
+use std::io::Read;
 
 // Bit 20 is set per https://www.bittorrent.org/beps/bep_0010.html
 const EXTENSION_RESERVED: u64 = 0b0000_1000_0000_0000_0000_0000;
@@ -153,7 +156,7 @@ impl BittorrentMessage {
             }
             EXTENSION => {
                 // See https://www.bittorrent.org/beps/bep_0009.html
-                //let message_id = payload[0];
+                let message_id = payload[0];
 
                 let cursor = Cursor::new(&payload[1..payload.len()]);
                 let mut data = BufReader::new(cursor);
@@ -265,6 +268,33 @@ impl BittorrentMessage {
                 data.extend(reserved);
                 data.extend(handshake.info_hash);
                 data.extend(handshake.peer_id);
+
+                data
+            }
+            BittorrentMessage::ExtensionHandshake { metadata_size } => {
+                let mut dictionary: HashMap<Vec<u8>, Bencoding> = HashMap::new();
+                if let Some(metadata_size) = metadata_size {
+                    dictionary.insert(
+                        "metadata_size".as_bytes().to_owned(),
+                        Bencoding::Integer {
+                            integer: *metadata_size as i64,
+                            position: None,
+                        },
+                    );
+                }
+
+                let mut payload = Vec::new();
+                payload.push(EXT_HANDSHAKE);
+                Bencoding::Dictionary {
+                    dictionary,
+                    position: None,
+                }
+                .serialize(&mut payload).expect("unable to serialise dictionary");
+
+                let mut data = Vec::new();
+                data.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+                data.push(EXTENSION);
+                data.extend_from_slice(&payload);
 
                 data
             }
