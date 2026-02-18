@@ -1,6 +1,7 @@
 use std::{collections::HashMap, net::Ipv4Addr};
 
 use actix::prelude::*;
+use log::debug;
 
 use crate::{
     bittorrent::{BittorrentMessage, Info, Magnet, Metadata},
@@ -116,6 +117,8 @@ impl MetadataCoordinator {
     }
 
     fn register(&self, ctx: &mut Context<Self>) {
+        debug!("Registering metadata coordinator");
+
         let fut = self.event_handler.send(Registration::Activate {
             id: RegId::next(),
             predicate: None,

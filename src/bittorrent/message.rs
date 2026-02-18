@@ -3,14 +3,15 @@ use std::error;
 use std::fmt;
 use std::io::BufReader;
 use std::io::Cursor;
+use std::string::FromUtf8Error;
 
 use super::ids::*;
 use crate::bittorrent::Bencoding;
 use crate::bittorrent::NOT_INTERESTED;
-use tokio_util::bytes::BufMut;
-use crate::bittorrent::ParseErr;
+use crate::bittorrent::PeerId;
 use byteorder::BigEndian;
 use byteorder::ReadBytesExt;
+use log::trace;
 use std::io::Read;
 
 // Bit 20 is set per https://www.bittorrent.org/beps/bep_0010.html
@@ -83,16 +84,37 @@ pub struct ExtensionRequest {
 
 #[derive(Clone)]
 pub struct MessageDeserialiser {
+    handshake: bool,
     ut_metadata: Option<u32>,
 }
 
 impl MessageDeserialiser {
     pub fn new() -> Self {
-        Self { ut_metadata: None }
+        Self {
+            ut_metadata: None,
+            handshake: false,
+        }
     }
 
     pub fn deserialise(&mut self, data: &[u8]) -> Result<BittorrentMessage, ParseError> {
+        if data.len() == 0 {
+            trace!("Length is zero, that's way too short");
+            return Err(ParseError::InvalidLength);
+        }
+
+        if !self.handshake {
+            return match BittorrentHandshake::deserialise(data)? {
+                Some(handshake) => {
+                    self.handshake = true;
+
+                    Ok(BittorrentMessage::Handshake { handshake })
+                }
+                None => Err(ParseError::InvalidLength),
+            };
+        }
+
         if data.len() < 4 {
+            trace!("Length is less than 4, that's way too short");
             return Err(ParseError::InvalidLength);
         }
         let length = u32::from_be_bytes([data[0], data[1], data[2], data[3]]) as usize;
@@ -102,6 +124,11 @@ impl MessageDeserialiser {
         }
 
         if data.len() < 4 + length {
+            trace!(
+                "Length was {} but must be {} at minimum",
+                data.len(),
+                4 + length
+            );
             return Err(ParseError::InvalidLength);
         }
 
@@ -174,8 +201,8 @@ impl MessageDeserialiser {
                 let cursor = Cursor::new(&payload[1..payload.len()]);
                 let mut data = BufReader::new(cursor);
 
-                let message = match message_id {
-                    EXTENSION_HANDSHAKE_ID => {
+                let message = match (message_id, self.ut_metadata) {
+                    (EXT_HANDSHAKE, _) => {
                         let dictionary = match Bencoding::deserialise(&mut data) {
                             Ok(Bencoding::Dictionary { dictionary, .. }) => dictionary,
                             Ok(data) => {
@@ -238,88 +265,92 @@ impl MessageDeserialiser {
                             ut_metadata,
                         }
                     }
-                    _ => todo!(),
+                    (message_id, Some(ut_metadata)) => {
+                        if message_id as u32 != ut_metadata {
+                            return Err(ParseError::UnknownExtId(message_id));
+                        }
+
+                        let cursor = Cursor::new(payload);
+                        let mut data = BufReader::new(cursor); // TODO just reuse the reader
+
+                        let dictionary = match Bencoding::deserialise(&mut data) {
+                            Ok(Bencoding::Dictionary { dictionary, .. }) => dictionary,
+                            Ok(other) => {
+                                return Err(ParseError::UnexpectedType {
+                                    expected: "dictionary",
+                                    actual: other.name(),
+                                });
+                            }
+                            Err(_) => return Err(ParseError::Malformed),
+                        };
+
+                        let metadata_message_type = match dictionary.get("msg_type".as_bytes()) {
+                            Some(Bencoding::Integer { integer, .. }) => integer,
+                            Some(other) => {
+                                return Err(ParseError::UnexpectedType {
+                                    expected: "dictionary",
+                                    actual: other.name(),
+                                });
+                            }
+                            None => return Err(ParseError::MissingField { name: "msg_type" }),
+                        };
+
+                        let piece_index = match dictionary.get("piece".as_bytes()) {
+                            Some(Bencoding::Integer { integer, .. }) => integer,
+                            Some(other) => {
+                                return Err(ParseError::UnexpectedType {
+                                    expected: "integer",
+                                    actual: other.name(),
+                                });
+                            }
+                            None => return Err(ParseError::MissingField { name: "piece" }),
+                        };
+
+                        let message = match *metadata_message_type as u8 {
+                            EXT_REQUEST => ExtensionMessage::Request {
+                                piece_index: *piece_index as u32,
+                            }, // TODO
+                            EXT_DATA => {
+                                let mut piece_data = Vec::with_capacity(1024 * 4);
+                                data.read_to_end(&mut piece_data)
+                                    .expect("unable to read piece data"); // TODO
+
+                                let total_size = match dictionary.get("total_size".as_bytes()) {
+                                    Some(Bencoding::Integer { integer, .. }) => integer,
+                                    Some(other) => {
+                                        return Err(ParseError::UnexpectedType {
+                                            expected: "integer",
+                                            actual: other.name(),
+                                        });
+                                    }
+                                    None => {
+                                        return Err(ParseError::MissingField {
+                                            name: "total_size",
+                                        });
+                                    }
+                                };
+
+                                ExtensionMessage::Data {
+                                    piece_index: *piece_index as u32,
+                                    total_size: *total_size as u32,
+                                    data: piece_data,
+                                }
+                            }
+                            EXT_REJECT => ExtensionMessage::Reject {
+                                piece_index: *piece_index as u32,
+                            },
+                            _ => todo!(),
+                        };
+
+                        return Ok(BittorrentMessage::Extension { message });
+                    }
+                    (unknown_ext_id, _) => return Err(ParseError::UnknownExtId(unknown_ext_id)),
                 };
 
                 return Ok(BittorrentMessage::Extension { message });
             }
-            _ => {}
-        };
-
-        if Some(id) == self.ut_metadata.map(|m| m as u8) {
-            // TODO make cast safe?
-            let cursor = Cursor::new(payload);
-            let mut data = BufReader::new(cursor); // TODO just reuse the reader
-
-            let dictionary = match Bencoding::deserialise(&mut data) {
-                Ok(Bencoding::Dictionary { dictionary, .. }) => dictionary,
-                Ok(other) => {
-                    return Err(ParseError::UnexpectedType {
-                        expected: "dictionary",
-                        actual: other.name(),
-                    });
-                }
-                Err(_) => return Err(ParseError::Malformed),
-            };
-
-            let metadata_message_type = match dictionary.get("msg_type".as_bytes()) {
-                Some(Bencoding::Integer { integer, .. }) => integer,
-                Some(other) => {
-                    return Err(ParseError::UnexpectedType {
-                        expected: "dictionary",
-                        actual: other.name(),
-                    });
-                }
-                None => return Err(ParseError::MissingField { name: "msg_type" }),
-            };
-
-            let piece_index = match dictionary.get("piece".as_bytes()) {
-                Some(Bencoding::Integer { integer, .. }) => integer,
-                Some(other) => {
-                    return Err(ParseError::UnexpectedType {
-                        expected: "integer",
-                        actual: other.name(),
-                    });
-                }
-                None => return Err(ParseError::MissingField { name: "piece" }),
-            };
-
-            let message = match *metadata_message_type as u8 {
-                EXT_REQUEST => ExtensionMessage::Request {
-                    piece_index: *piece_index as u32,
-                }, // TODO
-                EXT_DATA => {
-                    let mut piece_data = Vec::with_capacity(1024 * 4);
-                    data.read_to_end(&mut piece_data)
-                        .expect("unable to read piece data"); // TODO
-
-                    let total_size = match dictionary.get("total_size".as_bytes()) {
-                        Some(Bencoding::Integer { integer, .. }) => integer,
-                        Some(other) => {
-                            return Err(ParseError::UnexpectedType {
-                                expected: "integer",
-                                actual: other.name(),
-                            });
-                        }
-                        None => return Err(ParseError::MissingField { name: "total_size" }),
-                    };
-
-                    ExtensionMessage::Data {
-                        piece_index: *piece_index as u32,
-                        total_size: *total_size as u32,
-                        data: piece_data,
-                    }
-                }
-                EXT_REJECT => ExtensionMessage::Reject {
-                    piece_index: *piece_index as u32,
-                },
-                _ => todo!(),
-            };
-
-            return Ok(BittorrentMessage::Extension { message });
+            unknown_id => return Err(ParseError::UnknownId(unknown_id)),
         }
-
-        return Err(ParseError::UnknownId(id));
     }
 }
 
@@ -348,6 +379,8 @@ impl MessageSerialiser {
                 data.extend(reserved);
                 data.extend(handshake.info_hash);
                 data.extend(handshake.peer_id);
+
+                trace!("Serialised handshake of length {}", data.len());
 
                 data
             }
@@ -443,7 +476,9 @@ impl MessageSerialiser {
                 v.extend_from_slice(&port.to_be_bytes());
                 v
             }
-            BittorrentMessage::Extension { message: ExtensionMessage::Handshake { metadata_size, .. } } => {
+            BittorrentMessage::Extension {
+                message: ExtensionMessage::Handshake { metadata_size, .. },
+            } => {
                 let mut dictionary: HashMap<Vec<u8>, Bencoding> = HashMap::new();
                 if let Some(metadata_size) = metadata_size {
                     dictionary.insert(
@@ -461,7 +496,8 @@ impl MessageSerialiser {
                     dictionary,
                     position: None,
                 }
-                .serialise(&mut payload).expect("unable to serialise dictionary");
+                .serialise(&mut payload)
+                .expect("unable to serialise dictionary");
 
                 let mut data = Vec::new();
                 data.extend_from_slice(&(payload.len() as u32).to_be_bytes());
@@ -469,7 +505,7 @@ impl MessageSerialiser {
                 data.extend_from_slice(&payload);
 
                 data
-            },
+            }
             BittorrentMessage::Extension { message } => {
                 let mut message_dict = HashMap::new();
                 let mut msg_bytes = Vec::new();
@@ -517,41 +553,7 @@ impl MessageSerialiser {
                 }
 
                 msg_bytes
-            } /*BittorrentMessage::ExtensionHandshake { metadata_size } => {
-                  let mut dict_data: Vec<u8> = Vec::new();
-                  let mut dict_cursor = Cursor::new(&mut dict_data);
-
-                  let mut dictionary = HashMap::new();
-                  match metadata_size {
-                      None => {}
-                      Some(metadata_size) => {
-                          dictionary.insert(
-                              "metadata_size".as_bytes().to_owned(),
-                              Bencoding::Integer {
-                                  integer: *metadata_size as i64,
-                                  position: None,
-                              },
-                          );
-                      }
-                  }
-                  let dict = Bencoding::Dictionary {
-                      dictionary,
-                      position: None,
-                  };
-                  dict.serialise(&mut dict_cursor)
-                      .expect("unable to serialise dictionary");
-
-                  let mut data = Vec::new();
-
-                  let length = (1 + 1 + dict_data.len() as u32).to_be_bytes();
-
-                  data.extend_from_slice(&length);
-                  data.push(EXTENSION);
-                  data.push(EXTENSION_HANDSHAKE_ID);
-                  data.extend_from_slice(&dict_data);
-
-                  data
-              }*/
+            }
         }
     }
 }
@@ -560,6 +562,7 @@ impl MessageSerialiser {
 pub enum ParseError {
     InvalidLength,
     UnknownId(u8),
+    UnknownExtId(u8),
     Malformed,
     UnexpectedType {
         expected: &'static str,
@@ -568,6 +571,13 @@ pub enum ParseError {
     MissingField {
         name: &'static str,
     },
+    TooLong,
+}
+
+impl From<FromUtf8Error> for ParseError {
+    fn from(_err: FromUtf8Error) -> Self {
+        Self::InvalidLength
+    }
 }
 
 impl fmt::Display for ParseError {
@@ -575,11 +585,13 @@ impl fmt::Display for ParseError {
         match self {
             ParseError::InvalidLength => write!(f, "invalid length"),
             ParseError::UnknownId(id) => write!(f, "unknown id {}", id),
+            ParseError::UnknownExtId(id) => write!(f, "unknown extension msg id {}", id),
             ParseError::Malformed => write!(f, "malformed"),
             ParseError::UnexpectedType { expected, actual } => {
                 write!(f, "expected {}, received {}", expected, actual)
             }
             ParseError::MissingField { name } => write!(f, "missing field {}", name),
+            ParseError::TooLong => write!(f, "message length exceeded bounds"),
         }
     }
 }
@@ -594,8 +606,73 @@ pub struct BittorrentHandshake {
     pub peer_id: [u8; 20],
 }
 
+const MAX_PSTR: usize = 1024;
+
 impl BittorrentHandshake {
+    pub fn new(peer_id: PeerId, info_hash: [u8; 20]) -> Self {
+        // the extension protocol is enabled
+
+        BittorrentHandshake {
+            pstr: "BitTorrent protocol".as_bytes().to_owned(),
+            reserved: EXTENSION_RESERVED,
+            info_hash,
+            peer_id: peer_id.0,
+        }
+    }
+
     pub fn extension(&self) -> bool {
-        todo!()
+        self.reserved & EXTENSION_RESERVED == EXTENSION_RESERVED
+    }
+
+    pub fn deserialise(data: &[u8]) -> Result<Option<Self>, ParseError> {
+        trace!("Deserialising handshake from data of length {}", data.len());
+        if data.len() == 0 {
+            trace!("Data length is zero");
+            return Ok(None);
+        }
+
+        let mut cursor = Cursor::new(&data);
+
+        let pstr_len = cursor.read_u8().expect("unable to read first byte") as usize;
+        let handshake_len = pstr_len + 49;
+        if data.len() - 1 < handshake_len {
+            trace!(
+                "Data was {} byte(s) but need {} bytes",
+                data.len() - 1,
+                handshake_len
+            );
+            return Ok(None);
+        }
+
+        if pstr_len > MAX_PSTR {
+            return Err(ParseError::TooLong);
+        }
+
+        let mut pstr = vec![0u8; pstr_len];
+        cursor.read_exact(&mut pstr).expect("unable to read pstr");
+
+        let mut info_hash = [0u8; 20];
+        let mut peer_id = [0u8; 20];
+
+        let reserved = cursor
+            .read_u64::<BigEndian>()
+            .expect("unable to read reserved");
+        cursor
+            .read_exact(&mut info_hash)
+            .expect("unable to read info_hash");
+        cursor
+            .read_exact(&mut peer_id)
+            .expect("unable to read peer_id");
+
+        let handshake = Self {
+            pstr,
+            reserved,
+            info_hash,
+            peer_id,
+        };
+
+        trace!("Deserialised handshake: {:?}", handshake);
+
+        Ok(Some(handshake))
     }
 }

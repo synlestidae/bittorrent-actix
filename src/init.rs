@@ -1,11 +1,13 @@
 use actix::prelude::*;
 
-use crate::bittorrent::{Magnet, Metadata};
+use crate::bittorrent::{Magnet, Metadata, PeerId};
 use crate::commander::Commander;
 use crate::event::EventHandler;
 use crate::metadata_coordinator::MetadataCoordinator;
 use crate::peer_swarm::PeerSwarm;
 use crate::tracker::TrackerTracker;
+use rand::Rng;
+use rand::rng;
 
 pub struct Init {
     tracker_tracker: Addr<TrackerTracker>,
@@ -25,22 +27,23 @@ impl Init {
         options: InitOptions,
         event_handler: Addr<EventHandler>,
     ) -> Self {
+        let mut peer_id = [0u8; 20];
+        rng().fill(&mut peer_id);
+
         let tracker_tracker = match &options {
             InitOptions::Metadata(metadata) => TrackerTracker::with_metadata(
                 info_hash,
                 metadata.clone(),
                 event_handler.clone().recipient(),
             ),
-            InitOptions::Magnet(magnet) => TrackerTracker::with_magnet(
-                info_hash,
-                magnet.clone(),
-                event_handler.clone().recipient(),
-            ),
+            InitOptions::Magnet(magnet) => {
+                TrackerTracker::with_magnet(magnet.clone(), event_handler.clone().recipient())
+            }
         };
 
         let peer_swarm = PeerSwarm::new(event_handler.clone());
 
-        let commander = Commander::new(event_handler.clone());
+        let commander = Commander::new(info_hash, PeerId(peer_id), event_handler.clone());
 
         let metadata_coordinator = match options {
             InitOptions::Metadata(metadata) => {

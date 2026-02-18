@@ -2,6 +2,9 @@ use super::bencoding::{Bencoding, Position};
 use log::{debug, error};
 use sha1::{Digest, Sha1};
 
+#[derive(Debug, Clone, Copy)]
+pub struct PeerId(pub [u8; 20]);
+
 #[derive(Debug, Clone)]
 pub struct Metadata {
     pub announce: String,

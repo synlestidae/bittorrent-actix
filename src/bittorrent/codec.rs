@@ -1,5 +1,5 @@
 use core::fmt;
-use std::{error, mem};
+use std::error;
 
 use log::trace;
 use tokio::io;
@@ -8,11 +8,10 @@ use tokio_util::codec::{Decoder, Encoder};
 
 use crate::bittorrent::message::{MessageDeserialiser, MessageSerialiser};
 
-use super::{BittorrentHandshake, BittorrentMessage, ExtensionMessage, ParseError};
+use super::{BittorrentMessage, ExtensionMessage, ParseError};
 
 #[derive(Clone)]
 pub struct BittorrentCodec {
-    handshake_sent: bool,
     handshake_received: bool,
     extension_data_message: Option<ExtensionDataMessageState>,
     serialiser: MessageSerialiser,
@@ -28,7 +27,6 @@ struct ExtensionDataMessageState {
 impl BittorrentCodec {
     pub fn new() -> Self {
         Self {
-            handshake_sent: false,
             handshake_received: false,
             extension_data_message: None,
             serialiser: MessageSerialiser::new(),
@@ -42,7 +40,10 @@ impl Decoder for BittorrentCodec {
     type Error = DecoderError;
 
     fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
+        trace!("Decoding from {} byte(s)", src.len());
+
         if src.len() == 0 {
+            trace!("No bytes to decode");
             return Ok(None);
         }
 
@@ -70,22 +71,32 @@ impl Decoder for BittorrentCodec {
         let mut messages = Vec::new();
 
         if !self.handshake_received {
-            let handshake_len = *(src.get(0).unwrap()) as usize;
-            if handshake_len < src.len() - 1 {
+            trace!("Need to decode handshake first");
+
+            let pstr_len = *(src.get(0).unwrap()) as usize;
+            let handshake_len = pstr_len + 49;
+
+            if src.len() < handshake_len {
+                trace!(
+                    "Src was {} byte(s) but need {} bytes",
+                    src.len() - 1,
+                    handshake_len
+                );
                 return Ok(None);
             }
-            drop(src.split_to(1));
+            trace!("Deserialising {} handshake byte(s)", handshake_len);
 
             let data = src.split_to(handshake_len);
             if let BittorrentMessage::Handshake { handshake } =
                 self.deserialiser.deserialise(&data.to_vec())?
             {
+                self.handshake_received = true; // TODO redundant, duplicated 
                 messages.push(BittorrentMessage::Handshake { handshake });
             } else {
                 todo!("handshake should be first")
             }
 
-            return Ok(None);
+            return Ok(Some(messages));
         }
 
         // message len is u32 bit (8 byte) integer

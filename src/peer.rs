@@ -12,7 +12,7 @@ use crate::event::{Event, EventHandler};
 
 use tokio::net::TcpStream;
 
-use log::{debug, error};
+use log::{debug, error, info, trace};
 
 enum Connection {
     Init,
@@ -34,16 +34,21 @@ impl Peer {
     fn connect(&mut self, ctx: &mut <Self as Actor>::Context) {
         let addr = (self.ip_address, self.port);
 
+        debug!("Connecting to {}:{}", self.ip_address, self.port);
+
         ctx.spawn(
             TcpStream::connect(addr)
                 .into_actor(self)
                 .map(move |result, actor, ctx| {
                     let tcp_stream = match result {
-                        Ok(tcp_stream) => tcp_stream,
+                        Ok(tcp_stream) => {
+                            info!("Connected to {}:{}", addr.0, addr.1);
+                            tcp_stream
+                        }
                         Err(err) => {
                             debug!("Connection error: {}", err);
 
-                            actor.die(ctx);
+                            actor.terminate(ctx);
 
                             return;
                         }
@@ -64,23 +69,31 @@ impl Peer {
         let writer = FramedWrite::new(write_half, codec, ctx);
         self.connection = Connection::Connected { writer };
 
-        //let writer = FramedWrite::new(write_half, codec, ctx);
+        debug!("Connection to {}:{} successful", self.ip_address, self.port);
+
+        let fut = self.event_handler.send(Event::PeerConnect {
+            ip_address: self.ip_address,
+            port: self.port,
+            addr: ctx.address(),
+        });
+        ctx.spawn(fut.into_actor(self).map(|result, actor, ctx| {
+            match result {
+                Err(err) => error!("Error with PeerConnect: {}", err),
+                Ok(()) => return,
+            }
+
+            actor.terminate(ctx); // if errors in match
+        }));
     }
 
-    fn die(&mut self, ctx: &mut Context<Self>) {
-        let ip_address = self.ip_address;
-        let port = self.port;
+    fn terminate(&mut self, ctx: &mut Context<Self>) {
+        trace!("Sending termination event for {}:{}", self.ip_address, self.port);
 
-        self.connection = Connection::Dead;
+        let fut = self.event_handler.send(Event::PeerDeath { ip_address: self.ip_address, port: self.port });
 
-        let fut = self
-            .event_handler
-            .send(Event::PeerDeath { ip_address, port });
-
-        ctx.spawn(fut.into_actor(self).map(|result, _, _| {
-            if let Err(err) = result {
-                error!("Error while dying: {}", err);
-            }
+        ctx.spawn(fut.into_actor(self).map(|_, _, ctx| {
+            // don't care about result, time to die
+            ctx.terminate();
         }));
     }
 }
@@ -90,7 +103,10 @@ impl Actor for Peer {
 
     fn started(&mut self, ctx: &mut Self::Context) {
         self.connect(ctx);
-        //self.register(ctx);
+    }
+
+    fn stopped(&mut self, ctx: &mut Self::Context) {
+        debug!("Disconnecting from {}:{}", self.ip_address, self.port);
     }
 }
 
@@ -102,20 +118,11 @@ impl Peer {
             ip_address,
             port,
             connection: Connection::Init,
-            //registered: false,
             event_handler,
             messages: vec![],
         }
     }
 }
-
-/*impl Handler<Event> for Peer {
-    type Result = ();
-
-    fn handle(&mut self, msg: Event, ctx: &mut Self::Context) -> Self::Result {
-        todo!()
-    }
-}*/
 
 impl StreamHandler<Result<Vec<BittorrentMessage>, DecoderError>> for Peer {
     fn handle(
@@ -125,9 +132,11 @@ impl StreamHandler<Result<Vec<BittorrentMessage>, DecoderError>> for Peer {
     ) {
         match msg_result {
             Err(err) => {
-                todo!("Error receiving message: {}", err);
+                debug!("Error receiving message: {}", err);
+                self.terminate(ctx);
             }
             Ok(mut msgs) => {
+                debug!("Received {} message(s)", msgs.len());
                 self.messages.append(&mut msgs);
                 ctx.notify(NotifyRecv {});
             }
@@ -143,7 +152,19 @@ impl Handler<NotifyRecv> for Peer {
     type Result = ();
 
     fn handle(&mut self, _: NotifyRecv, ctx: &mut Context<Self>) -> Self::Result {
-        let messages = self.messages.drain(..).collect();
+        let messages: Vec<_> = self.messages.drain(..).collect();
+
+        debug!("Received {} message(s)", messages.len());
+        for msg in messages.iter() {
+            trace!(
+                "Received {}",
+                match msg {
+                    BittorrentMessage::Piece { index, begin, .. } =>
+                        format!("Piece {{ index: {}, begin: {} }}", index, begin),
+                    msg => format!("{:?}", msg),
+                }
+            );
+        }
 
         let fut = self.event_handler.send(Event::PeerRecvMessages {
             ip_address: self.ip_address,
@@ -161,4 +182,38 @@ impl Handler<NotifyRecv> for Peer {
 
 impl WriteHandler<io::Error> for Peer {
     // TODO this sort of error should shut the peer down
+}
+
+#[derive(Debug, Message)]
+#[rtype(result = "Result<(), PeerError>")]
+pub struct SendMessages {
+    pub messages: Vec<BittorrentMessage>,
+}
+
+#[derive(Debug)]
+pub enum PeerError {
+    NotConnected,
+}
+
+impl Handler<SendMessages> for Peer {
+    type Result = Result<(), PeerError>;
+
+    fn handle(&mut self, msg: SendMessages, _ctx: &mut Self::Context) -> Self::Result {
+        if let Connection::Connected { writer } = &mut self.connection {
+            trace!(
+                "Sending {} message(s) to {}:{}",
+                msg.messages.len(),
+                self.ip_address,
+                self.port
+            );
+
+            for msg in msg.messages {
+                writer.write(msg);
+            }
+
+            return Ok(());
+        }
+
+        Err(PeerError::NotConnected)
+    }
 }

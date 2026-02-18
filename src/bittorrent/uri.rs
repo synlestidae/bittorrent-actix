@@ -1,3 +1,4 @@
+use log::trace;
 use std::{mem, string::FromUtf8Error};
 
 #[derive(Debug, Eq, PartialEq)]
@@ -41,6 +42,8 @@ impl Uri {
     }
 
     pub fn parse(uri: &str) -> Result<Self, ParseErr> {
+        trace!("Parsing URI: {:?}", uri);
+
         let mut i = 0;
         let bytes = uri.as_bytes();
         let scheme = Self::parse_scheme(bytes, &mut i)?;
@@ -72,7 +75,9 @@ impl Uri {
                 });
             }
         };
+
         Self::eat(uri, i, ":")?;
+        Self::maybe_eat(uri, i, "//")?;
 
         Ok(scheme)
     }
@@ -205,6 +210,20 @@ impl Uri {
         *i += j;
 
         Ok(())
+    }
+
+    fn maybe_eat(uri: &[u8], i: &mut usize, expect: &'static str) -> Result<bool, ParseErr> {
+        let mut j = *i;
+
+        match Self::eat(uri, &mut j, expect) {
+            Err(ParseErr::UnexpectedEnd { .. }) => Ok(false),
+            Err(ParseErr::UnexpectedChar { .. }) => Ok(false),
+            Err(err) => return Err(err),
+            Ok(()) => {
+                *i = j;
+                Ok(true)
+            }
+        }
     }
 }
 

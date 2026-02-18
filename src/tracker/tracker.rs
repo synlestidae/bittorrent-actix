@@ -11,8 +11,9 @@ use crate::tracker::udp_client::ConnectRes;
 use crate::tracker::udp_client::NONE_EVENT;
 use crate::tracker::udp_client::UDP_PROTOCOL_ID;
 use crate::tracker::udp_client::UdpClient;
+use crate::tracker::udp_client::UdpClientErr;
 use actix::prelude::*;
-use log::{debug, error};
+use log::{debug, error, trace};
 use percent_encoding::{NON_ALPHANUMERIC, percent_encode};
 use rand::RngCore;
 use reqwest::StatusCode;
@@ -23,7 +24,8 @@ use std::{
 };
 
 pub struct Tracker {
-    metadata: Metadata,
+    metadata: Option<Metadata>,
+    udp_address: Option<(String, u16)>, // (host, port)
     info_hash: [u8; 20],
     peer_id: [u8; 20],
 }
@@ -34,14 +36,43 @@ impl Tracker {
         rand::rng().fill_bytes(&mut peer_id);
 
         Self {
-            metadata,
+            metadata: Some(metadata),
+            udp_address: None,
             info_hash,
             peer_id,
         }
     }
 
     pub fn with_uri(uri: String, info_hash: [u8; 20]) -> Self {
-        unimplemented!()
+        debug!("Tracker URI {}", uri);
+
+        let mut peer_id = [0u8; 20];
+        rand::rng().fill_bytes(&mut peer_id);
+
+        let uri = Uri::parse(&uri).unwrap(); // TODO
+
+        println!("Tracker URI parsed {:?}", uri);
+
+        if (uri.scheme != "udp") {
+            todo!("handle error when scheme is not udp");
+        }
+
+        let host = match uri.host {
+            Some(host) => host,
+            None => todo!("handle error when host is blank"),
+        };
+
+        let port = match uri.port {
+            Some(port) => port,
+            None => 80,
+        };
+
+        Self {
+            metadata: None,
+            udp_address: Some((host, port)),
+            info_hash,
+            peer_id,
+        }
     }
 
     fn ask_http(
@@ -49,8 +80,12 @@ impl Tracker {
         _ctx: &mut Context<Self>,
     ) -> ResponseActFuture<Self, Result<HttpTrackerResponse, TrackerError>> {
         // Build the URL for GET request
-        let mut url = self.metadata.announce.clone();
-        let left = self.metadata.total_file_bytes();
+        let metadata = match &self.metadata {
+            Some(m) => m,
+            None => todo!("shouldn't happen"),
+        };
+        let mut url = metadata.announce.clone();
+        let left = metadata.total_file_bytes();
 
         let info_hash = self.info_hash.clone();
         let peer_id = self.peer_id.clone();
@@ -101,31 +136,35 @@ impl Tracker {
         let info_hash = self.info_hash.clone();
         let peer_id = self.peer_id.clone();
 
-        let announce = self.metadata.announce.clone();
+        let (host, port) = match &self.udp_address {
+            Some((h, p)) => (h.clone(), *p),
+            None => todo!("handle error when udp address somehow not available"),
+        };
 
         Box::pin(
             async move {
-                let uri = Uri::parse(&announce)?;
-                let host = uri.host;
-                let port = match uri.port {
-                    Some(p) => p,
-                    None => return Err(TrackerError::InvalidUri),
-                };
+                debug!("Connecting to {}", host);
+
                 let mut rng = rand::rng();
                 let transaction_id = rng.next_u32();
                 let key = rng.next_u32();
                 let num_want = -1;
-                let client = UdpClient::connect(&host.unwrap(), port).await.unwrap(); // TODO unwraps
+                let client = UdpClient::connect(&host, port).await?;
+
+                debug!("Sending connect request to {}", host);
                 let connect_req = ConnectReq {
                     protocol_id: UDP_PROTOCOL_ID,
                     action: CONNECT_ACTION,
                     transaction_id,
                 };
-                client.send(connect_req).await.unwrap();
+                client.send(connect_req).await?;
 
-                let connect_res: ConnectRes = client.recv().await.unwrap();
+                debug!("Receiving connect response from {}", host);
+                let connect_res: ConnectRes = client.recv().await?;
+
+                debug!("Received connect response from {}", host);
                 if connect_res.transaction_id != transaction_id {
-                    unimplemented!(
+                    todo!(
                         "Transaction ID does not match - expected {}, got {}",
                         transaction_id,
                         connect_res.transaction_id
@@ -133,6 +172,7 @@ impl Tracker {
                 }
                 let connection_id = connect_res.connection_id;
 
+                debug!("Sending announce req to {}", host);
                 let announce_req = AnnounceReq {
                     connection_id,
                     action: ANNOUNCE_ACTION,
@@ -148,12 +188,13 @@ impl Tracker {
                     num_want,
                     port,
                 };
-                client.send(announce_req).await.unwrap();
+                client.send(announce_req).await?;
 
-                let connect_res: ConnectRes = client.recv().await.unwrap();
-                client.send(connect_res).await.unwrap();
+                debug!("Waiting for announce res from {}", host);
+                let announce_res: AnnounceRes = client.recv().await?;
 
-                let announce_res: AnnounceRes = client.recv().await.unwrap();
+                debug!("Received announce res from {}", host);
+                trace!("Announce res from {} was {:?}", host, announce_res);
 
                 Ok(HttpTrackerResponse {
                     interval: Some(announce_res.interval),
@@ -175,7 +216,7 @@ impl Actor for Tracker {
     type Context = Context<Self>;
 }
 
-#[derive(Message)]
+#[derive(Message, Debug)]
 #[rtype(result = "Result<HttpTrackerResponse, TrackerError>")]
 pub struct AskTracker {}
 
@@ -185,6 +226,7 @@ pub enum TrackerError {
     InvalidStatus(StatusCode),
     InvalidUri,
     InvalidUriScheme,
+    UdpClientErr(UdpClientErr),
 }
 
 impl From<reqwest::Error> for TrackerError {
@@ -199,16 +241,22 @@ impl From<ParseErr> for TrackerError {
     }
 }
 
+impl From<UdpClientErr> for TrackerError {
+    fn from(err: UdpClientErr) -> Self {
+        TrackerError::UdpClientErr(err)
+    }
+}
+
 impl Handler<AskTracker> for Tracker {
     type Result = ResponseActFuture<Self, Result<HttpTrackerResponse, TrackerError>>;
 
     fn handle(&mut self, _msg: AskTracker, ctx: &mut Context<Self>) -> Self::Result {
-        let announce = self.metadata.announce.clone();
-
-        if announce.starts_with("udp:") {
+        if self.udp_address.is_some() {
             Box::pin(self.ask_udp(ctx))
-        } else {
+        } else if self.metadata.is_some() {
             Box::pin(self.ask_http(ctx))
+        } else {
+            unreachable!("should always have either udp address or metadata")
         }
     }
 }

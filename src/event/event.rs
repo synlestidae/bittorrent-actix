@@ -3,8 +3,9 @@ use std::net::Ipv4Addr;
 
 use crate::bittorrent::BittorrentMessage;
 use crate::bittorrent::Info;
+use crate::peer::Peer;
 
-#[derive(Message, Clone)]
+#[derive(Debug, Message, Clone)]
 #[rtype(result = "()")]
 pub enum Event {
     PeerList {
@@ -16,6 +17,7 @@ pub enum Event {
     PeerConnect {
         ip_address: Ipv4Addr,
         port: u16,
+        addr: Addr<Peer>,
     },
     PeerRecvMessages {
         ip_address: Ipv4Addr,

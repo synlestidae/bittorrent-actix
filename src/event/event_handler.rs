@@ -49,8 +49,14 @@ impl Handler<Event> for EventHandler {
     }
 }
 
+#[derive(Debug)]
+pub enum CommandError {
+    PeerNotFound,
+    SendError,
+}
+
 #[derive(Message, Clone)]
-#[rtype(result = "()")]
+#[rtype(result = "Result<(), CommandError>")]
 pub enum Command {
     PeerSendMessages {
         ip_address: Ipv4Addr,
@@ -60,10 +66,18 @@ pub enum Command {
 }
 
 impl Handler<Command> for EventHandler {
-    type Result = ();
+    type Result = ResponseActFuture<Self, Result<(), CommandError>>;
 
     fn handle(&mut self, msg: Command, ctx: &mut Self::Context) -> Self::Result {
         // damn what was I doing again?
+        todo!()
+        /*match msg {
+            Command::PeerSendMessages { ip_address, port, messages } => {
+                for recipient in self.recipients.iter() {
+                    ctx.spawn(recipient.send())
+                }
+            }
+        }*/
     }
 }
 

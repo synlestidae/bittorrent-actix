@@ -6,7 +6,7 @@ use std::{
 
 use actix::prelude::*;
 
-use log::error;
+use log::{debug, error, info};
 use sha1::{Digest, Sha1};
 
 use crate::{
@@ -49,6 +49,8 @@ impl MetadataDownloader {
     }
 
     fn register(&self, ctx: &mut Context<Self>) {
+        debug!("Registering metadata downloader");
+
         let fut = self.event_handler.send(Registration::Activate {
             id: RegId::next(),
             predicate: Some(EventPredicate {
@@ -79,6 +81,10 @@ impl MetadataDownloader {
         let info_hash = digest.finalize();
 
         if info_hash.to_vec() != self.info_hash.to_vec() {
+            info!(
+                "Metadata from {}:{} does not match hash",
+                self.ip_address, self.port
+            );
             return; // TODO log something
         }
 
@@ -112,6 +118,8 @@ impl MetadataDownloader {
             return;
         }
 
+        debug!("Requesting metadata from {}:{}", self.ip_address, self.port);
+
         let exact_length = match self.exact_length {
             Some(l) => l,
             None => return,
@@ -139,7 +147,9 @@ impl MetadataDownloader {
                 })
                 .into_actor(self)
                 .map(|result, _, _| {
-                    result.expect("unable to send peer messages");
+                    result
+                        .expect("unable to send peer messages")
+                        .expect("unable to send peer messages");
                 }),
         );
     }

@@ -1,3 +1,5 @@
+use log::trace;
+use std::io::ErrorKind;
 use std::io::Read;
 use std::io::Write;
 use std::{
@@ -9,6 +11,7 @@ pub use tokio::net::UdpSocket;
 
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 
+/// See https://www.bittorrent.org/beps/bep_0015.html
 pub struct UdpClient {
     host: String,
     port: u16,
@@ -60,9 +63,9 @@ impl UdpClient {
     pub async fn recv<M: UdpMessage>(&self) -> Result<M, UdpClientErr> {
         let mut buffer = vec![0u8; M::buffer_len()];
 
-        self.socket.recv(&mut buffer).await?;
+        let len = self.socket.recv(&mut buffer).await?;
 
-        let message: M = M::deserialise(&buffer)?;
+        let message: M = M::deserialise(&buffer[0..len])?;
         Ok(message)
     }
 }
@@ -96,6 +99,7 @@ pub const ACCOUNT_ACTION: u32 = 1;
 /// 8       32-bit integer  action          0 // connect
 /// 12      32-bit integer  transaction_id
 /// 16
+#[derive(Debug)]
 pub struct ConnectReq {
     pub protocol_id: u64,
     pub action: u32,
@@ -139,6 +143,7 @@ impl UdpMessage for ConnectReq {
 /// 4       32-bit integer  transaction_id
 /// 8       64-bit integer  connection_id
 /// 16
+#[derive(Debug)]
 pub struct ConnectRes {
     pub action: u32,
     pub transaction_id: u32,
@@ -177,7 +182,7 @@ impl UdpMessage for ConnectRes {
     }
 }
 
-pub const ANNOUNCE_ACTION: u32 = 0;
+pub const ANNOUNCE_ACTION: u32 = 1;
 
 pub const NONE_EVENT: u32 = 0;
 pub const COMPLETED_EVENT: u32 = 1;
@@ -199,6 +204,7 @@ pub const STOPPED_EVENT: u32 = 3;
 /// 92      32-bit integer  num_want        -1 // default
 /// 96      16-bit integer  port
 /// 98
+#[derive(Debug)]
 pub struct AnnounceReq {
     pub connection_id: u64,
     pub action: u32,
@@ -301,6 +307,7 @@ impl UdpMessage for AnnounceReq {
 /// 20 + 6 * n  32-bit integer  IP address
 /// 24 + 6 * n  16-bit integer  TCP port
 /// 20 + 6 * N
+#[derive(Debug)]
 pub struct AnnounceRes {
     pub action: u32,
     pub transaction_id: u32,
@@ -312,7 +319,11 @@ pub struct AnnounceRes {
 
 impl UdpMessage for AnnounceRes {
     fn deserialise(data: &[u8]) -> Result<Self, ParseErr> {
+        trace!("Deserialising AnnounceRes: of length {}", data.len());
+        trace!("Packet data: {:?}", data);
+
         let len = data.len();
+        trace!("Total len is {}", len);
 
         let mut cursor = Cursor::new(data);
 
@@ -331,27 +342,36 @@ impl UdpMessage for AnnounceRes {
             peers: Vec::new(),
         };
 
-        while cursor.position() >= len as u64 {
+        trace!("Reading peers");
+        while cursor.position() < len as u64 {
             let mut ip_address = [0u8; 4];
-            match cursor.read(&mut ip_address)? {
-                bytes_read => {
-                    if bytes_read < 4 {
+            match cursor.read_exact(&mut ip_address) {
+                Ok(()) => {}
+                Err(err) => {
+                    if err.kind() == ErrorKind::UnexpectedEof {
                         return Err(ParseErr::TooShort);
                     }
+
+                    return Err(err.into());
                 }
             }
 
             let mut port_bytes = [0u8; 2];
-            match cursor.read(&mut port_bytes)? {
-                bytes_read => {
-                    if bytes_read < 2 {
+            match cursor.read_exact(&mut port_bytes) {
+                Ok(()) => {}
+                Err(err) => {
+                    if err.kind() == ErrorKind::UnexpectedEof {
                         return Err(ParseErr::TooShort);
                     }
+
+                    return Err(err.into());
                 }
             }
             let ip_address =
                 Ipv4Addr::new(ip_address[0], ip_address[1], ip_address[2], ip_address[3]);
             let port = ((port_bytes[0] as u16) << 8) + port_bytes[1] as u16;
+
+            //trace!("Read peer {}:{}", ip_address, port);
 
             announce_res.peers.push((ip_address, port));
         }

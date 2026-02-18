@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use actix::{Actor, Addr, AsyncContext, Context, Recipient};
 use actix::{SpawnHandle, WrapFuture};
-use log::{error, info};
+use log::{debug, error, info};
 use std::cmp::min;
 use tokio::time::sleep;
 
@@ -55,15 +55,11 @@ impl TrackerTracker {
         }
     }
 
-    pub fn with_magnet(
-        info_hash: [u8; 20],
-        magnet: Magnet,
-        event_handler: Recipient<Event>,
-    ) -> Self {
+    pub fn with_magnet(magnet: Magnet, event_handler: Recipient<Event>) -> Self {
         Self {
             metadata: None,
+            info_hash: magnet.info_hash.clone(),
             magnet: Some(magnet),
-            info_hash,
             handles: Vec::new(),
             event_handler,
         }
@@ -99,6 +95,11 @@ impl TrackerTracker {
                                 continue;
                             }
                         };
+
+                        debug!(
+                            "Received tracker response with {} peer(s)",
+                            tracker_response.peers.len()
+                        );
 
                         if let Some(tracker_interval) = tracker_response.interval {
                             interval = Duration::from_secs(min(

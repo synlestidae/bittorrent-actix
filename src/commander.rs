@@ -1,12 +1,17 @@
 use std::{collections::HashMap, net::Ipv4Addr};
 
+use crate::{
+    bittorrent::{BittorrentHandshake, PeerId},
+    peer::{Peer, SendMessages},
+};
 use actix::prelude::*;
 use bitvec::{order::Msb0, vec::BitVec};
+use log::{debug, info, trace};
 use std::cmp::min;
 
 use crate::{
     bittorrent::BittorrentMessage,
-    event::{Event, EventHandler, RegId, Registration},
+    event::{Command, Event, EventHandler, RegId, Registration},
     piece_downloader::PieceDownloader,
     piece_uploader::PieceUploader,
 };
@@ -57,15 +62,19 @@ impl PeerState {
 }
 
 pub struct Commander {
-    peers: HashMap<(Ipv4Addr, u16), PeerState>,
+    info_hash: [u8; 20],
+    peer_id: PeerId,
+    peers: HashMap<(Ipv4Addr, u16), (PeerState, Addr<Peer>)>,
     piece_uploaders: HashMap<u32, Addr<PieceUploader>>,
     piece_downloaders: HashMap<u32, Addr<PieceDownloader>>,
     event_handler: Addr<EventHandler>,
 }
 
 impl Commander {
-    pub fn new(event_handler: Addr<EventHandler>) -> Self {
+    pub fn new(info_hash: [u8; 20], peer_id: PeerId, event_handler: Addr<EventHandler>) -> Self {
         Self {
+            info_hash,
+            peer_id,
             peers: HashMap::new(),
             piece_uploaders: HashMap::new(),
             piece_downloaders: HashMap::new(),
@@ -74,6 +83,7 @@ impl Commander {
     }
 
     fn register(&self, ctx: &mut Context<Self>) {
+        debug!("Registering commander");
         let fut = self.event_handler.send(Registration::Activate {
             id: RegId::next(),
             predicate: None,
@@ -83,6 +93,68 @@ impl Commander {
         ctx.spawn(fut.into_actor(self).map(|result, _, _| {
             result.expect("unable to register commander");
         }));
+    }
+
+    fn send_messages(&mut self, ctx: &mut Context<Self>) {
+        // do the handshakes
+        trace!("Can command {} peer(s)", self.peers.len());
+
+        let addresses: Vec<_> = self
+            .peers
+            .iter()
+            .filter_map(|((ip_address, port), (peer_state, addr))| {
+                if !peer_state.handshake_sent {
+                    Some((*ip_address, *port, addr))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        debug!("Got {} handshake(s) to send", addresses.len());
+
+        for (ip_address, port, addr) in addresses.iter() {
+            let handshake = BittorrentHandshake::new(self.peer_id, self.info_hash);
+
+            let fut = addr.send(SendMessages {
+                messages: vec![
+                    BittorrentMessage::Handshake { handshake },
+                    BittorrentMessage::Unchoke,
+                ],
+            });
+            trace!("Sending handshake to {}:{}", ip_address, port);
+
+            let (ip_address, port) = (ip_address.clone(), port.clone());
+
+            ctx.spawn(
+                fut.into_actor(self)
+                    .map(move |result, actor, _| match result {
+                        Err(err) => {
+                            info!(
+                                "Error sending handshake to {}:{}: {:?}",
+                                ip_address, port, err
+                            );
+                            return;
+                        }
+                        Ok(Err(err)) => {
+                            info!(
+                                "Error sending handshake to {}:{}: {:?}",
+                                ip_address, port, err
+                            );
+                            return;
+                        }
+                        Ok(Ok(())) => {
+                            info!("Handshake sent to {}:{}", ip_address, port);
+
+                            if let Some((peer_state, _)) = actor.peers.get_mut(&(ip_address, port))
+                            {
+                                peer_state.handshake_sent = true;
+                                peer_state.us_choking = false;
+                            }
+                        }
+                    }),
+            ); // TODO
+        }
     }
 }
 
@@ -97,25 +169,42 @@ impl Actor for Commander {
 impl Handler<Event> for Commander {
     type Result = ();
 
-    fn handle(&mut self, msg: Event, _ctx: &mut Self::Context) -> Self::Result {
+    fn handle(&mut self, msg: Event, ctx: &mut Self::Context) -> Self::Result {
         match msg {
-            Event::PeerConnect { ip_address, port } => {
-                self.peers.insert((ip_address, port), PeerState::new());
+            Event::PeerConnect {
+                ip_address,
+                port,
+                addr,
+            } => {
+                debug!("Now commanding peer {}:{}", ip_address, port);
+
+                self.peers
+                    .insert((ip_address, port), (PeerState::new(), addr));
             }
             Event::PeerRecvMessages {
                 ip_address,
                 port,
                 messages,
             } => {
-                if let Some(peer) = self.peers.get_mut(&(ip_address, port)) {
-                    handle_incoming_messages(peer, messages);
+                trace!(
+                    "Received {} messages from {}:{}",
+                    messages.len(),
+                    ip_address,
+                    port
+                );
+                if let Some((peer_state, _)) = self.peers.get_mut(&(ip_address, port)) {
+                    handle_incoming_messages(peer_state, messages);
                 }
             }
             Event::PeerDeath { ip_address, port } => {
+                debug!("Not longer commanding peer {}:{}", ip_address, port);
+
                 self.peers.remove(&(ip_address, port));
             }
             _ => {}
         }
+
+        self.send_messages(ctx);
     }
 }
 

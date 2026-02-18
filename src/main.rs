@@ -29,7 +29,6 @@ use crate::bittorrent::{Bencoding, Magnet, Metadata, Position, Uri};
 use crate::event::EventHandler;
 use crate::filer::PieceFile;
 use crate::init::{Init, InitOptions, Ping};
-use crate::tracker::MetadataSource;
 
 #[actix::main(worker_threads = 50, max_blocking_threads = 50)]
 async fn main() {
@@ -44,6 +43,8 @@ async fn main() {
         exit(1);
     }
 
+    let event_handler = EventHandler::new().start();
+
     let metadata_file = &metadata[1];
     let init_addr: Addr<Init> = if metadata_file.starts_with("magnet:") {
         let uri = match Uri::parse(metadata_file) {
@@ -55,12 +56,11 @@ async fn main() {
         };
         let magnet = Magnet::parse(uri).unwrap();
 
-        // then parse uri into magnet
-        // then um... make a tracker that tracks ... the trackers
-        // then the trackers start a swarm
-        // but we don't have
+        let options = InitOptions::Magnet(magnet.clone());
 
-        unimplemented!("Make this work: {:?}", magnet)
+        let init = Init::with_metadata(magnet.info_hash, options, event_handler);
+
+        init.start()
     } else {
         // Open the file to decode metadata
         let handle = File::open(metadata_file).unwrap();
@@ -79,7 +79,6 @@ async fn main() {
         let mut piece_file = PieceFile::open(&filename).await.unwrap();
         piece_file.initialise().await.unwrap();
 
-        let event_handler = EventHandler::new().start();
         let options = InitOptions::Metadata(metadata);
         let init = Init::with_metadata(info_hash, options, event_handler);
 

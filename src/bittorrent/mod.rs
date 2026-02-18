@@ -18,6 +18,7 @@ pub use message::{
 pub use metadata::Info;
 pub use metadata::Metadata;
 pub use metadata::ModeFile;
+pub use metadata::PeerId;
 pub use piece::CompletePiece;
 pub use piece::Piece;
 pub use piece::PieceRequest;
