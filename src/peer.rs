@@ -1,14 +1,16 @@
 use std::net::Ipv4Addr;
+use std::time::Duration;
 
 use actix::io::{FramedWrite, WriteHandler};
 use actix::prelude::*;
 use actix::{Actor, AsyncContext, Context, Handler, WrapFuture};
 use tokio::io;
 use tokio::net::tcp::OwnedWriteHalf;
+use tokio::time::timeout;
 use tokio_util::codec::FramedRead;
 
 use crate::bittorrent::{BittorrentCodec, BittorrentMessage, DecoderError};
-use crate::event::{Event, EventHandler};
+use crate::event::{ConnectionEvent, EventHandler, RecvMessageEvent};
 
 use tokio::net::TcpStream;
 
@@ -34,19 +36,30 @@ impl Peer {
     fn connect(&mut self, ctx: &mut <Self as Actor>::Context) {
         let addr = (self.ip_address, self.port);
 
+        const TIMEOUT_S: u64 = 15;
+
         debug!("Connecting to {}:{}", self.ip_address, self.port);
 
+        let duration = Duration::from_secs(TIMEOUT_S);
+
         ctx.spawn(
-            TcpStream::connect(addr)
+            timeout(duration, TcpStream::connect(addr))
                 .into_actor(self)
                 .map(move |result, actor, ctx| {
                     let tcp_stream = match result {
-                        Ok(tcp_stream) => {
-                            info!("Connected to {}:{}", addr.0, addr.1);
+                        Ok(Ok(tcp_stream)) => {
+                            info!("Successfully connected to {}:{}", addr.0, addr.1);
                             tcp_stream
                         }
-                        Err(err) => {
+                        Ok(Err(err)) => {
                             debug!("Connection error: {}", err);
+
+                            actor.terminate(ctx);
+
+                            return;
+                        }
+                        Err(err) => {
+                            debug!("Timeout error: {}", err);
 
                             actor.terminate(ctx);
 
@@ -71,10 +84,10 @@ impl Peer {
 
         debug!("Connection to {}:{} successful", self.ip_address, self.port);
 
-        let fut = self.event_handler.send(Event::PeerConnect {
+        let fut = self.event_handler.send(ConnectionEvent::Connected {
             ip_address: self.ip_address,
             port: self.port,
-            addr: ctx.address(),
+            peer: ctx.address(),
         });
         ctx.spawn(fut.into_actor(self).map(|result, actor, ctx| {
             match result {
@@ -87,9 +100,15 @@ impl Peer {
     }
 
     fn terminate(&mut self, ctx: &mut Context<Self>) {
-        trace!("Sending termination event for {}:{}", self.ip_address, self.port);
+        trace!(
+            "Sending termination event for {}:{}",
+            self.ip_address, self.port
+        );
 
-        let fut = self.event_handler.send(Event::PeerDeath { ip_address: self.ip_address, port: self.port });
+        let fut = self.event_handler.send(ConnectionEvent::Disconnected {
+            ip_address: self.ip_address,
+            port: self.port,
+        });
 
         ctx.spawn(fut.into_actor(self).map(|_, _, ctx| {
             // don't care about result, time to die
@@ -105,7 +124,7 @@ impl Actor for Peer {
         self.connect(ctx);
     }
 
-    fn stopped(&mut self, ctx: &mut Self::Context) {
+    fn stopped(&mut self, _ctx: &mut Self::Context) {
         debug!("Disconnecting from {}:{}", self.ip_address, self.port);
     }
 }
@@ -132,11 +151,11 @@ impl StreamHandler<Result<Vec<BittorrentMessage>, DecoderError>> for Peer {
     ) {
         match msg_result {
             Err(err) => {
-                debug!("Error receiving message: {}", err);
+                debug!("error receiving message: {}", err);
                 self.terminate(ctx);
             }
             Ok(mut msgs) => {
-                debug!("Received {} message(s)", msgs.len());
+                debug!("received {} message(s)", msgs.len());
                 self.messages.append(&mut msgs);
                 ctx.notify(NotifyRecv {});
             }
@@ -154,10 +173,10 @@ impl Handler<NotifyRecv> for Peer {
     fn handle(&mut self, _: NotifyRecv, ctx: &mut Context<Self>) -> Self::Result {
         let messages: Vec<_> = self.messages.drain(..).collect();
 
-        debug!("Received {} message(s)", messages.len());
+        debug!("received {} message(s)", messages.len());
         for msg in messages.iter() {
             trace!(
-                "Received {}",
+                "received bittorrent message {}",
                 match msg {
                     BittorrentMessage::Piece { index, begin, .. } =>
                         format!("Piece {{ index: {}, begin: {} }}", index, begin),
@@ -166,7 +185,7 @@ impl Handler<NotifyRecv> for Peer {
             );
         }
 
-        let fut = self.event_handler.send(Event::PeerRecvMessages {
+        let fut = self.event_handler.send(RecvMessageEvent {
             ip_address: self.ip_address,
             port: self.port,
             messages,

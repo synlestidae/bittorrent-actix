@@ -6,19 +6,23 @@ use std::{
 
 use actix::prelude::*;
 
-use log::{debug, error, info};
+use log::{debug, error, info, trace};
 use sha1::{Digest, Sha1};
 
 use crate::{
     bittorrent::{Bencoding, BittorrentMessage, ExtensionMessage, Info},
-    event::{Command, Event, EventHandler, EventPredicate, RegId, Registration},
+    event::{EventHandler, MetadataEvent, RecvMessageEvent, Registration},
+    peer::{Peer, SendMessages},
 };
 
 pub struct MetadataDownloader {
     ip_address: Ipv4Addr,
     port: u16,
-    event_handler: Addr<EventHandler>,
+    peer: Addr<Peer>,
     data: Vec<u8>,
+    metadata_handshake_sent: bool,
+    metadata_handshake_received: bool,
+    event_handler: Addr<EventHandler>,
     exact_length: Option<usize>,
     next_piece: usize,
     info_hash: [u8; 20],
@@ -27,37 +31,41 @@ pub struct MetadataDownloader {
 
 const BLOCK_SIZE: usize = 16384;
 
+const UT_METADATA: u32 = 3;
+
 impl MetadataDownloader {
     pub fn new(
         addr: (Ipv4Addr, u16),
         event_handler: Addr<EventHandler>,
         info_hash: [u8; 20],
-        exact_length: Option<usize>,
+        peer: Addr<Peer>,
     ) -> Self {
         let (ip_address, port) = addr;
 
         Self {
             ip_address,
             port,
+            peer,
             event_handler,
             data: Vec::new(),
-            exact_length,
             info_hash,
             next_piece: 0,
             request_made: false,
+            metadata_handshake_sent: false,
+            metadata_handshake_received: false,
+            exact_length: None,
         }
     }
 
     fn register(&self, ctx: &mut Context<Self>) {
-        debug!("Registering metadata downloader");
+        debug!(
+            "registering metadata downloader for {}:{}",
+            self.ip_address, self.port
+        );
 
-        let fut = self.event_handler.send(Registration::Activate {
-            id: RegId::next(),
-            predicate: Some(EventPredicate {
-                peer_address: Some((self.ip_address, self.port)),
-                piece_index: None,
-                message_type: None,
-            }),
+        let fut = self.event_handler.send(Registration::RecvMessage {
+            ip_address: self.ip_address,
+            port: self.port,
             recipient: ctx.address().recipient(),
         });
 
@@ -79,6 +87,8 @@ impl MetadataDownloader {
         let mut digest = Sha1::new();
         digest.update(&self.data);
         let info_hash = digest.finalize();
+
+        trace!("finalising metadata");
 
         if info_hash.to_vec() != self.info_hash.to_vec() {
             info!(
@@ -107,23 +117,48 @@ impl MetadataDownloader {
             }
         };
 
-        let fut = self.event_handler.send(Event::Metadata { info });
+        info!("metadata downloaded successfully");
+
+        let fut = self.event_handler.send(MetadataEvent { info });
         ctx.spawn(fut.into_actor(self).map(|result, _, _| {
             result.expect("unable to deliver metadata");
         }));
     }
 
     fn request(&mut self, ctx: &mut Context<Self>) {
+        if !self.metadata_handshake_sent {
+            self.metadata_handshake_sent = true;
+            let messages = vec![BittorrentMessage::Extension {
+                message: ExtensionMessage::Handshake {
+                    metadata_size: None,
+                    ut_metadata: UT_METADATA,
+                },
+            }];
+            let fut = self.peer.send(SendMessages { messages });
+            ctx.spawn(fut.into_actor(self).map(|result, _, _| {
+                result
+                    .expect("unable to send extension handshake")
+                    .expect("unable to send extension handshake");
+            }));
+        }
+        if !self.metadata_handshake_received {
+            return;
+        }
         if self.request_made {
             return;
         }
 
-        debug!("Requesting metadata from {}:{}", self.ip_address, self.port);
+        debug!("requesting metadata from {}:{}", self.ip_address, self.port);
 
         let exact_length = match self.exact_length {
             Some(l) => l,
-            None => return,
+            None => {
+                debug!("do not know exact length");
+                return;
+            }
         };
+
+        debug!("metadata has exact length {}", exact_length);
 
         self.request_made = true;
 
@@ -139,12 +174,8 @@ impl MetadataDownloader {
 
         // Send command here
         ctx.spawn(
-            self.event_handler
-                .send(Command::PeerSendMessages {
-                    ip_address: self.ip_address,
-                    port: self.port,
-                    messages,
-                })
+            self.peer
+                .send(SendMessages { messages })
                 .into_actor(self)
                 .map(|result, _, _| {
                     result
@@ -155,24 +186,37 @@ impl MetadataDownloader {
     }
 }
 
-impl Handler<Event> for MetadataDownloader {
+impl Actor for MetadataDownloader {
+    type Context = Context<Self>;
+
+    fn started(&mut self, ctx: &mut Self::Context) {
+        self.register(ctx);
+        self.schedule(ctx);
+    }
+}
+
+impl Handler<RecvMessageEvent> for MetadataDownloader {
     type Result = ();
 
-    fn handle(&mut self, msg: Event, ctx: &mut Self::Context) -> Self::Result {
-        let messages = match msg {
-            Event::PeerRecvMessages {
-                ip_address,
-                port,
-                messages,
-            } => {
-                if (ip_address, port) != (self.ip_address, self.port) {
-                    return;
-                }
+    fn handle(&mut self, msg: RecvMessageEvent, ctx: &mut Self::Context) -> Self::Result {
+        let messages = msg.messages;
 
-                messages
+        messages.iter().for_each(|m| match m {
+            BittorrentMessage::Extension {
+                message:
+                    ExtensionMessage::Handshake {
+                        metadata_size,
+                        ut_metadata,
+                    },
+            } => {
+                trace!(
+                    "Received extension handshake metadata_size={:?}, ut_metadata={:?}",
+                    metadata_size, ut_metadata
+                );
+                self.exact_length = metadata_size.map(|m| m as usize);
             }
-            _ => return,
-        };
+            _ => (),
+        });
 
         let mut metadatas: Vec<_> = messages
             .into_iter()
@@ -213,14 +257,5 @@ impl Handler<Event> for MetadataDownloader {
             self.next_piece = 0;
             self.data = vec![];
         }
-    }
-}
-
-impl Actor for MetadataDownloader {
-    type Context = Context<Self>;
-
-    fn started(&mut self, ctx: &mut Self::Context) {
-        self.register(ctx);
-        self.schedule(ctx);
     }
 }

@@ -31,13 +31,11 @@ impl Init {
         rng().fill(&mut peer_id);
 
         let tracker_tracker = match &options {
-            InitOptions::Metadata(metadata) => TrackerTracker::with_metadata(
-                info_hash,
-                metadata.clone(),
-                event_handler.clone().recipient(),
-            ),
+            InitOptions::Metadata(metadata) => {
+                TrackerTracker::with_metadata(info_hash, metadata.clone(), event_handler.clone())
+            }
             InitOptions::Magnet(magnet) => {
-                TrackerTracker::with_magnet(magnet.clone(), event_handler.clone().recipient())
+                TrackerTracker::with_magnet(magnet.clone(), event_handler.clone())
             }
         };
 

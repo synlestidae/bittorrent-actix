@@ -1,13 +1,13 @@
 use std::time::Duration;
 
-use actix::{Actor, Addr, AsyncContext, Context, Recipient};
+use actix::{Actor, Addr, AsyncContext, Context};
 use actix::{SpawnHandle, WrapFuture};
 use log::{debug, error, info};
 use std::cmp::min;
 use tokio::time::sleep;
 
 use crate::bittorrent::{Magnet, Metadata};
-use crate::event::Event;
+use crate::event::{EventHandler, TrackerUpdateEvent};
 use crate::tracker::AskTracker;
 use crate::tracker::Tracker;
 
@@ -16,7 +16,7 @@ pub struct TrackerTracker {
     magnet: Option<Magnet>,
     info_hash: [u8; 20],
     handles: Vec<SpawnHandle>,
-    event_handler: Recipient<Event>,
+    event_handler: Addr<EventHandler>,
 }
 
 impl Actor for TrackerTracker {
@@ -44,7 +44,7 @@ impl TrackerTracker {
     pub fn with_metadata(
         info_hash: [u8; 20],
         metadata: Metadata,
-        event_handler: Recipient<Event>,
+        event_handler: Addr<EventHandler>,
     ) -> Self {
         Self {
             metadata: Some(metadata),
@@ -55,7 +55,7 @@ impl TrackerTracker {
         }
     }
 
-    pub fn with_magnet(magnet: Magnet, event_handler: Recipient<Event>) -> Self {
+    pub fn with_magnet(magnet: Magnet, event_handler: Addr<EventHandler>) -> Self {
         Self {
             metadata: None,
             info_hash: magnet.info_hash.clone(),
@@ -109,7 +109,7 @@ impl TrackerTracker {
                         }
 
                         if let Err(err) = event_handler
-                            .send(Event::PeerList {
+                            .send(TrackerUpdateEvent {
                                 peers: tracker_response.peers,
                             })
                             .await

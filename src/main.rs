@@ -33,7 +33,9 @@ use crate::init::{Init, InitOptions, Ping};
 #[actix::main(worker_threads = 50, max_blocking_threads = 50)]
 async fn main() {
     println!("Starting up");
-    init();
+    env_logger::builder()
+        .target(env_logger::Target::Stdout)
+        .init();
 
     let args = args();
     let metadata: Vec<String> = args.collect();

@@ -374,7 +374,7 @@ impl MessageSerialiser {
                     + handshake.peer_id.len();
 
                 let mut data = Vec::with_capacity(len);
-                data.push(len as u8);
+                data.push(handshake.pstr.len() as u8); // TODO
                 data.extend(&handshake.pstr);
                 data.extend(reserved);
                 data.extend(handshake.info_hash);
@@ -635,7 +635,7 @@ impl BittorrentHandshake {
 
         let pstr_len = cursor.read_u8().expect("unable to read first byte") as usize;
         let handshake_len = pstr_len + 49;
-        if data.len() - 1 < handshake_len {
+        if data.len() < handshake_len {
             trace!(
                 "Data was {} byte(s) but need {} bytes",
                 data.len() - 1,

@@ -1,7 +1,7 @@
-use crate::event::Event;
+use crate::event::ConnectionEvent;
 use crate::event::EventHandler;
-use crate::event::RegId;
 use crate::event::Registration;
+use crate::event::TrackerUpdateEvent;
 use crate::peer::Peer;
 
 use std::collections::HashMap;
@@ -10,11 +10,13 @@ use std::time::Duration;
 
 use actix::prelude::*;
 use log::debug;
+use log::trace;
 use rand::Rng;
 
 use std::time::Instant;
 
 pub struct PeerSwarm {
+    available_peers: HashMap<(Ipv4Addr, u16), Instant>,
     peers: HashMap<(Ipv4Addr, u16), Addr<Peer>>,
     event_handler: Addr<EventHandler>,
     moratorium: HashMap<(Ipv4Addr, u16), Instant>,
@@ -23,6 +25,7 @@ pub struct PeerSwarm {
 impl PeerSwarm {
     pub fn new(event_handler: Addr<EventHandler>) -> Self {
         Self {
+            available_peers: HashMap::new(),
             peers: HashMap::new(),
             event_handler,
             moratorium: HashMap::new(),
@@ -32,9 +35,7 @@ impl PeerSwarm {
     fn register(&self, ctx: &mut Context<Self>) {
         debug!("Registering peer swarm");
 
-        let fut = self.event_handler.send(Registration::Activate {
-            id: RegId::next(),
-            predicate: None,
+        let fut = self.event_handler.send(Registration::Connection {
             recipient: ctx.address().recipient(),
         });
 
@@ -66,12 +67,12 @@ impl Actor for PeerSwarm {
     }
 }
 
-const MAX_PEERS: usize = 100;
+const MAX_PEERS: usize = 50;
 
-impl Handler<Event> for PeerSwarm {
+impl Handler<TrackerUpdateEvent> for PeerSwarm {
     type Result = ();
 
-    fn handle(&mut self, msg: Event, _ctx: &mut Self::Context) -> Self::Result {
+    fn handle(&mut self, msg: TrackerUpdateEvent, _ctx: &mut Self::Context) -> Self::Result {
         self.clear_moratorium();
 
         let now = Instant::now();
@@ -82,10 +83,7 @@ impl Handler<Event> for PeerSwarm {
                 let fuzz = random.random_range(0..30);
                 let instant = now + Duration::from_secs(fuzz);
 
-                self.moratorium.insert(
-                    (*ip_address, *port),
-                    instant,
-                );
+                self.moratorium.insert((*ip_address, *port), instant);
 
                 return false;
             }
@@ -93,28 +91,26 @@ impl Handler<Event> for PeerSwarm {
             true
         });
 
-        let mut peers = match msg {
-            Event::PeerList { peers } => peers,
-            Event::PeerDeath { ip_address, port } => {
-                let fuzz = random.random_range(0..30);
-                let instant = now + Duration::from_secs(fuzz);
+        let new_peers = msg.peers;
 
-                self.moratorium.insert(
-                    (ip_address, port),
-                    instant,
-                );
-
-                return;
-            },
-            _ => return,
-        };
-
-        peers.sort_by_key(|(ip_address, port)| {
-            match self.moratorium.get(&(*ip_address, *port)) {
-                Some(moratorium_timestamp) => Duration::from_secs(u64::max_value()) - now.duration_since(*moratorium_timestamp),
-                None => return Duration::from_secs(0)
-            }
+        new_peers.into_iter().for_each(|(ip_address, port)| {
+            self.available_peers.insert((ip_address, port), now);
         });
+
+        self.available_peers
+            .retain(|_, timestamp| now.duration_since(*timestamp) < Duration::from_secs(3 * 60));
+
+        let mut peers: Vec<_> = self.available_peers.keys().cloned().collect();
+
+        peers.sort_by_key(
+            |(ip_address, port)| match self.moratorium.get(&(*ip_address, *port)) {
+                Some(moratorium_timestamp) => {
+                    Duration::from_secs(u64::max_value())
+                        - now.duration_since(*moratorium_timestamp)
+                }
+                None => return Duration::from_secs(0),
+            },
+        );
 
         for (ip_address, port) in peers {
             if self.peers.len() >= MAX_PEERS {
@@ -132,5 +128,26 @@ impl Handler<Event> for PeerSwarm {
         }
 
         debug!("Have {} peer(s) in swarm", self.peers.len());
+    }
+}
+
+impl Handler<ConnectionEvent> for PeerSwarm {
+    type Result = ();
+
+    fn handle(&mut self, msg: ConnectionEvent, _ctx: &mut Self::Context) -> Self::Result {
+        let (ip_address, port) = match msg {
+            ConnectionEvent::Connected { .. } => return,
+            ConnectionEvent::Disconnected { ip_address, port } => (ip_address, port),
+        };
+        let now = Instant::now();
+
+        let mut random = rand::rng();
+        let fuzz = random.random_range(0..30);
+        let instant = now + Duration::from_secs(fuzz);
+
+        trace!("Removing {}:{} from swarm", ip_address, port);
+
+        self.moratorium.insert((ip_address, port), instant);
+        self.peers.remove(&(ip_address, port));
     }
 }

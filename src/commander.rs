@@ -2,6 +2,7 @@ use std::{collections::HashMap, net::Ipv4Addr};
 
 use crate::{
     bittorrent::{BittorrentHandshake, PeerId},
+    event::{ConnectionEvent, RecvMessageEvent},
     peer::{Peer, SendMessages},
 };
 use actix::prelude::*;
@@ -11,7 +12,7 @@ use std::cmp::min;
 
 use crate::{
     bittorrent::BittorrentMessage,
-    event::{Command, Event, EventHandler, RegId, Registration},
+    event::{EventHandler, Registration},
     piece_downloader::PieceDownloader,
     piece_uploader::PieceUploader,
 };
@@ -84,9 +85,7 @@ impl Commander {
 
     fn register(&self, ctx: &mut Context<Self>) {
         debug!("Registering commander");
-        let fut = self.event_handler.send(Registration::Activate {
-            id: RegId::next(),
-            predicate: None,
+        let fut = self.event_handler.send(Registration::Connection {
             recipient: ctx.address().recipient(),
         });
 
@@ -166,45 +165,46 @@ impl Actor for Commander {
     }
 }
 
-impl Handler<Event> for Commander {
+impl Handler<ConnectionEvent> for Commander {
+    type Result = ResponseActFuture<Self, ()>;
+
+    fn handle(&mut self, msg: ConnectionEvent, ctx: &mut Self::Context) -> Self::Result {
+        match msg {
+            ConnectionEvent::Connected {
+                ip_address,
+                port,
+                peer,
+            } => {
+                self.peers
+                    .insert((ip_address, port), (PeerState::new(), peer));
+
+                return Box::pin(
+                    self.event_handler
+                        .send(Registration::RecvMessage {
+                            ip_address,
+                            port,
+                            recipient: ctx.address().recipient(),
+                        })
+                        .into_actor(self)
+                        .map(|result, _, _| {
+                            result.expect("unable to register for recv message events");
+                        }),
+                );
+            }
+            ConnectionEvent::Disconnected { ip_address, port } => {
+                self.peers.remove(&(ip_address, port));
+
+                return Box::pin(async {}.into_actor(self));
+            }
+        }
+    }
+}
+
+impl Handler<RecvMessageEvent> for Commander {
     type Result = ();
 
-    fn handle(&mut self, msg: Event, ctx: &mut Self::Context) -> Self::Result {
-        match msg {
-            Event::PeerConnect {
-                ip_address,
-                port,
-                addr,
-            } => {
-                debug!("Now commanding peer {}:{}", ip_address, port);
-
-                self.peers
-                    .insert((ip_address, port), (PeerState::new(), addr));
-            }
-            Event::PeerRecvMessages {
-                ip_address,
-                port,
-                messages,
-            } => {
-                trace!(
-                    "Received {} messages from {}:{}",
-                    messages.len(),
-                    ip_address,
-                    port
-                );
-                if let Some((peer_state, _)) = self.peers.get_mut(&(ip_address, port)) {
-                    handle_incoming_messages(peer_state, messages);
-                }
-            }
-            Event::PeerDeath { ip_address, port } => {
-                debug!("Not longer commanding peer {}:{}", ip_address, port);
-
-                self.peers.remove(&(ip_address, port));
-            }
-            _ => {}
-        }
-
-        self.send_messages(ctx);
+    fn handle(&mut self, msg: RecvMessageEvent, ctx: &mut Self::Context) -> Self::Result {
+        todo!()
     }
 }
 

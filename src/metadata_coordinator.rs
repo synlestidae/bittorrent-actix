@@ -1,11 +1,11 @@
 use std::{collections::HashMap, net::Ipv4Addr};
 
 use actix::prelude::*;
-use log::debug;
+use log::{debug, trace};
 
 use crate::{
-    bittorrent::{BittorrentMessage, Info, Magnet, Metadata},
-    event::{Event, EventHandler, RegId, Registration},
+    bittorrent::{Info, Magnet, Metadata},
+    event::{ConnectionEvent, EventHandler, Registration},
     metadata_downloader::MetadataDownloader,
 };
 
@@ -21,83 +21,41 @@ impl Actor for MetadataCoordinator {
     type Context = Context<Self>;
 
     fn started(&mut self, ctx: &mut Self::Context) {
+        debug!("Activated metadata coordinator");
         self.register(ctx);
     }
 }
 
-impl Handler<Event> for MetadataCoordinator {
+impl Handler<ConnectionEvent> for MetadataCoordinator {
     type Result = ();
 
-    fn handle(&mut self, event: Event, ctx: &mut Self::Context) -> Self::Result {
-        // I am impressed at how sparse and ugly the syntax in rust can get
-        let (ip_address, port, messages) = match (&self.metadata, &self.magnet, &self.info, event) {
-            (None, _, None, Event::Metadata { info }) => {
-                self.info = Some(info);
-
-                return;
+    fn handle(&mut self, event: ConnectionEvent, _ctx: &mut Self::Context) -> Self::Result {
+        if self.metadata.is_some() {
+            return;
+        }
+        let info_hash = match &self.magnet {
+            Some(m) => m.info_hash.clone(),
+            None => return,
+        };
+        match event {
+            ConnectionEvent::Connected {
+                ip_address,
+                port,
+                peer,
+            } => {
+                let downloader = MetadataDownloader::new(
+                    (ip_address, port),
+                    self.event_handler.clone(),
+                    info_hash,
+                    peer.clone(),
+                );
+                self.downloaders
+                    .insert((ip_address, port), downloader.start());
             }
-            (Some(metadata), _, _, Event::PeerConnect { .. }) => {
-                let fut = self.event_handler.send(Event::Metadata {
-                    info: metadata.info.clone(),
-                });
-                ctx.spawn(fut.into_actor(self).map(|result, _, _| {
-                    result.expect("could not send metadata");
-                }));
-
-                return;
-            }
-            (_, _, _, Event::PeerDeath { ip_address, port }) => {
+            ConnectionEvent::Disconnected { ip_address, port } => {
                 self.downloaders.remove(&(ip_address, port));
-
-                return;
             }
-            (
-                _,
-                _,
-                _,
-                Event::PeerRecvMessages {
-                    ip_address,
-                    port,
-                    messages,
-                },
-            ) => (ip_address, port, messages),
-            _ => return,
-        };
-
-        // this point means we are processing a handshake
-        // moreover, it means we are in need of metadata
-        let (info_hash, exact_length) = match self.magnet {
-            Some(Magnet {
-                info_hash,
-                exact_length,
-                ..
-            }) => (info_hash, exact_length),
-            None => todo!("think this state is somehow unreachable"),
-        };
-
-        let handshakes: Vec<_> = messages
-            .into_iter()
-            .filter_map(|m| match m {
-                BittorrentMessage::Handshake { handshake } => Some(handshake),
-                _ => None,
-            })
-            .collect();
-        if handshakes.len() == 0 {
-            return;
         }
-        let handshake = &handshakes[0];
-        if !handshake.extension() {
-            return;
-        }
-
-        let downloader = MetadataDownloader::new(
-            (ip_address, port),
-            self.event_handler.clone(),
-            info_hash.clone(),
-            exact_length,
-        );
-        self.downloaders
-            .insert((ip_address, port), downloader.start());
     }
 }
 
@@ -119,9 +77,7 @@ impl MetadataCoordinator {
     fn register(&self, ctx: &mut Context<Self>) {
         debug!("Registering metadata coordinator");
 
-        let fut = self.event_handler.send(Registration::Activate {
-            id: RegId::next(),
-            predicate: None,
+        let fut = self.event_handler.send(Registration::Connection {
             recipient: ctx.address().recipient(),
         });
 

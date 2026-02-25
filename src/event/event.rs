@@ -5,83 +5,52 @@ use crate::bittorrent::BittorrentMessage;
 use crate::bittorrent::Info;
 use crate::peer::Peer;
 
-#[derive(Debug, Message, Clone)]
+#[derive(Message, Clone)]
 #[rtype(result = "()")]
-pub enum Event {
-    PeerList {
-        peers: Vec<(Ipv4Addr, u16)>,
-    },
-    Metadata {
-        info: Info,
-    },
-    PeerConnect {
-        ip_address: Ipv4Addr,
-        port: u16,
-        addr: Addr<Peer>,
-    },
-    PeerRecvMessages {
-        ip_address: Ipv4Addr,
-        port: u16,
-        messages: Vec<BittorrentMessage>,
-    },
-    PeerDeath {
-        ip_address: Ipv4Addr,
-        port: u16,
-    },
-    /*GotMetadata {
-        metadata: Metadata,
-    },
-    PeerConnect {
+pub enum ConnectionEvent {
+    Connected {
         ip_address: Ipv4Addr,
         port: u16,
         peer: Addr<Peer>,
     },
-    PeerDisconnect {
+    Disconnected {
         ip_address: Ipv4Addr,
         port: u16,
     },
-    PeerCompletePiece {
-        ip_address: Ipv4Addr,
-        port: u16,
-        piece_index: u32,
-    },*/
 }
 
-pub const HTTP_TRACKER_UPDATE: u32 = 0b0000_0001;
-pub const GOT_METADATA: u32 = 0b0000_0010;
-pub const PEER_CONNECT: u32 = 0b0000_0100;
-pub const PEER_DISCONNECT: u32 = 0b0000_1000;
-pub const PEER_RECV_MESSAGES: u32 = 0b0001_0000;
-pub const PEER_COMPLETE_PIECE: u32 = 0b0010_0000;
-
-#[derive(Clone)]
-pub struct RegId(u64);
-
-impl RegId {
-    pub fn next() -> Self {
-        RegId(0) // TODO!!!
-    }
+#[derive(Message, Clone)]
+#[rtype(result = "()")]
+pub struct RecvMessageEvent {
+    pub ip_address: Ipv4Addr,
+    pub port: u16,
+    pub messages: Vec<BittorrentMessage>,
 }
 
-#[derive(Clone)]
-pub struct EventInfo {
-    pub peer_id: Option<(Ipv4Addr, u16)>,
-    pub piece_index: Option<u32>,
+#[derive(Message, Clone)]
+#[rtype(result = "()")]
+pub struct TrackerUpdateEvent {
+    pub peers: Vec<(Ipv4Addr, u16)>,
 }
 
-#[derive(Clone)]
-pub struct EventPredicate {
-    pub peer_address: Option<(Ipv4Addr, u16)>,
-    pub piece_index: Option<u32>,
-    pub message_type: Option<u16>,
+#[derive(Message, Clone)]
+#[rtype(result = "()")]
+pub struct MetadataEvent {
+    pub info: Info,
 }
 
 #[derive(Message, Clone)]
 #[rtype(result = "()")]
 pub enum Registration {
-    Activate {
-        id: RegId,
-        predicate: Option<EventPredicate>,
-        recipient: Recipient<Event>,
+    Connection {
+        recipient: Recipient<ConnectionEvent>,
+    },
+    RecvMessage {
+        ip_address: Ipv4Addr,
+        port: u16,
+        recipient: Recipient<RecvMessageEvent>,
+    },
+    Metadata {
+        recipient: Recipient<MetadataEvent>,
     },
 }
