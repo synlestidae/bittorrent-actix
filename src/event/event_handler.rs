@@ -49,6 +49,9 @@ impl Handler<Registration> for EventHandler {
             }
             Registration::Metadata { recipient } => {
                 self.metadata_recipients.push(recipient.downgrade());
+            },
+            Registration::TrackerUpdate { recipient } => {
+                self.tracker_update_recipients.push(recipient.downgrade());
             }
         };
     }

@@ -1,4 +1,6 @@
 use actix::prelude::*;
+use bitvec::order::Msb0;
+use bitvec::vec::BitVec;
 use std::net::Ipv4Addr;
 
 use crate::bittorrent::BittorrentMessage;
@@ -53,4 +55,27 @@ pub enum Registration {
     Metadata {
         recipient: Recipient<MetadataEvent>,
     },
+    TrackerUpdate {
+        recipient: Recipient<TrackerUpdateEvent>,
+    }
 }
+
+#[derive(Message, Clone)]
+#[rtype(result = "()")]
+pub enum PieceUpdate {
+    Complete {
+        index: u32,
+    },
+    Have {
+        ip_address: Ipv4Addr,
+        port: u16,
+        index: usize,
+    },
+    Bitfield {
+        ip_address: Ipv4Addr,
+        port: u16,
+        bitfield: BitVec<u8, Msb0>,
+    },
+}
+
+pub struct PieceComplete {}

@@ -22,6 +22,7 @@ mod metadata_downloader;
 mod peer;
 mod peer_swarm;
 mod piece_downloader;
+mod piece_swarm;
 mod piece_uploader;
 mod tracker;
 

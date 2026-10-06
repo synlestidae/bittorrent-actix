@@ -1,4 +1,7 @@
+use std::process::exit;
+
 use actix::prelude::*;
+use log::{debug, error};
 
 use crate::bittorrent::{Magnet, Metadata, PeerId};
 use crate::commander::Commander;
@@ -75,4 +78,14 @@ impl Handler<Ping> for Init {
 
 impl Actor for Init {
     type Context = Context<Self>;
+
+    fn started(&mut self, _ctx: &mut Self::Context) {
+        debug!("Init started"); 
+    }
+
+
+    fn stopped(&mut self, ctx: &mut Self::Context) {
+        error!("Init stopped");
+        exit(1);
+    }
 }

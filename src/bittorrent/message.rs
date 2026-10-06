@@ -15,7 +15,7 @@ use log::trace;
 use std::io::Read;
 
 // Bit 20 is set per https://www.bittorrent.org/beps/bep_0010.html
-const EXTENSION_RESERVED: u64 = 0b0000_1000_0000_0000_0000_0000;
+const EXTENSION_RESERVED: u64 = 0b0000_0000_0000_0001_0000_0000_0000_0000;
 
 const EXTENSION_MSG_ID: u8 = 20;
 
@@ -477,11 +477,13 @@ impl MessageSerialiser {
                 v
             }
             BittorrentMessage::Extension {
-                message: ExtensionMessage::Handshake { metadata_size, .. },
+                message: ExtensionMessage::Handshake { metadata_size, ut_metadata },
             } => {
-                let mut dictionary: HashMap<Vec<u8>, Bencoding> = HashMap::new();
+                let mut payload_dict: HashMap<Vec<u8>, Bencoding> = HashMap::new();
+                let mut m_dict: HashMap<Vec<u8>, Bencoding> = HashMap::new();
+
                 if let Some(metadata_size) = metadata_size {
-                    dictionary.insert(
+                    payload_dict.insert(
                         "metadata_size".as_bytes().to_owned(),
                         Bencoding::Integer {
                             integer: *metadata_size as i64,
@@ -489,18 +491,28 @@ impl MessageSerialiser {
                         },
                     );
                 }
+                m_dict.insert(
+                    "ut_metadata".as_bytes().to_owned(),
+                    Bencoding::Integer {
+                        integer: *ut_metadata as i64,
+                        position: None,
+                    },
+                );
+                payload_dict.insert("m".as_bytes().to_owned(), Bencoding::Dictionary { dictionary: m_dict, position: None });
 
                 let mut payload = Vec::new();
                 payload.push(EXT_HANDSHAKE);
                 Bencoding::Dictionary {
-                    dictionary,
+                    dictionary: payload_dict,
                     position: None,
                 }
                 .serialise(&mut payload)
                 .expect("unable to serialise dictionary");
 
                 let mut data = Vec::new();
-                data.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+                data.extend_from_slice(&(payload.len() as u32 + 1).to_be_bytes()); // EXTENSION id
+                                                                                   // itself is
+                                                                                   // included
                 data.push(EXTENSION);
                 data.extend_from_slice(&payload);
 
@@ -674,5 +686,24 @@ impl BittorrentHandshake {
         trace!("Deserialised handshake: {:?}", handshake);
 
         Ok(Some(handshake))
+    }
+}
+
+
+#[cfg(test)]
+mod test {
+    use crate::bittorrent::{BittorrentMessage, ExtensionMessage, MessageSerialiser};
+
+    #[test]
+    fn serialises_extension_handshake() {
+        let serialiser = MessageSerialiser::new();
+        let handshake = BittorrentMessage::Extension { message: ExtensionMessage::Handshake { metadata_size: Some(365), ut_metadata: 75 } };
+
+        let bytes = serialiser.serialise(&handshake);
+
+        assert_eq!(&bytes[0..4], &[0x00, 0x00, 0x00, 25]); // length prefix is 
+        assert_eq!(&bytes[4], &20u8); // message id is 20
+        assert_eq!(&bytes[5], &0u8); // extension message id is 0
+        assert_eq!(&bytes[6..bytes.len()], "d13:metadata_sizei365ee".as_bytes()); // extension message id is 0
     }
 }

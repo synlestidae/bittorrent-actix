@@ -1,8 +1,8 @@
-use std::{collections::HashMap, net::Ipv4Addr};
+use std::{collections::HashMap, net::Ipv4Addr, process::exit};
 
 use crate::{
-    bittorrent::{BittorrentHandshake, PeerId},
-    event::{ConnectionEvent, RecvMessageEvent},
+    bittorrent::{BittorrentHandshake, Info, PeerId},
+    event::{ConnectionEvent, MetadataEvent, RecvMessageEvent},
     peer::{Peer, SendMessages},
 };
 use actix::prelude::*;
@@ -20,6 +20,8 @@ use crate::{
 use log::error;
 
 const THEY_HAVE_MAX_BITS: usize = 800_000_000;
+
+const PIECE_DOWNLOADER_MAX: usize = 100;
 
 struct PeerState {
     pub handshake_sent: bool,
@@ -69,6 +71,8 @@ pub struct Commander {
     piece_uploaders: HashMap<u32, Addr<PieceUploader>>,
     piece_downloaders: HashMap<u32, Addr<PieceDownloader>>,
     event_handler: Addr<EventHandler>,
+    info: Option<Info>,
+    we_have: Option<BitVec>,
 }
 
 impl Commander {
@@ -80,17 +84,25 @@ impl Commander {
             piece_uploaders: HashMap::new(),
             piece_downloaders: HashMap::new(),
             event_handler,
+            info: None,
+            we_have: None,
         }
     }
 
     fn register(&self, ctx: &mut Context<Self>) {
         debug!("Registering commander");
-        let fut = self.event_handler.send(Registration::Connection {
+
+        let reg_conn_fut = self.event_handler.send(Registration::Connection {
             recipient: ctx.address().recipient(),
         });
 
-        ctx.spawn(fut.into_actor(self).map(|result, _, _| {
-            result.expect("unable to register commander");
+        ctx.spawn(reg_conn_fut.into_actor(self).map(|result, _, _ctx| {
+            if let Err(err) = result {
+                error!("unable to register commander: {}", err);
+                exit(1);
+            }
+
+            debug!("Commander registered");
         }));
     }
 
@@ -118,7 +130,7 @@ impl Commander {
             let fut = addr.send(SendMessages {
                 messages: vec![
                     BittorrentMessage::Handshake { handshake },
-                    BittorrentMessage::Unchoke,
+                    //BittorrentMessage::Unchoke,
                 ],
             });
             trace!("Sending handshake to {}:{}", ip_address, port);
@@ -133,6 +145,7 @@ impl Commander {
                                 "Error sending handshake to {}:{}: {:?}",
                                 ip_address, port, err
                             );
+                            actor.peers.remove(&(ip_address, port));
                             return;
                         }
                         Ok(Err(err)) => {
@@ -140,6 +153,7 @@ impl Commander {
                                 "Error sending handshake to {}:{}: {:?}",
                                 ip_address, port, err
                             );
+                            actor.peers.remove(&(ip_address, port));
                             return;
                         }
                         Ok(Ok(())) => {
@@ -155,13 +169,55 @@ impl Commander {
             ); // TODO
         }
     }
+
+    fn handle_piece_requests(&mut self) {
+        let info = match &self.info {
+            Some(i) => i,
+            None => return,
+        };
+        let we_have = match &self.we_have {
+            Some(we_have) => we_have,
+            None => return,
+        };
+
+        if self.piece_downloaders.len() > PIECE_DOWNLOADER_MAX {
+            return;
+        }
+
+        let max = PIECE_DOWNLOADER_MAX - self.piece_downloaders.len();
+
+        let mut pieces_we_want: Vec<_> = we_have
+            .iter()
+            .enumerate()
+            .filter_map(|(i, we_have)| {
+                let have = *we_have;
+                if !have && !self.piece_downloaders.contains_key(&(i as u32)) {
+                    Some(i)
+                } else {
+                    None
+                }
+            })
+            .take(max)
+            .collect();
+
+        pieces_we_want.drain(..).for_each(|piece_index| {
+            let downloader = PieceDownloader::new(piece_index as u32, self.event_handler.clone());
+            self.piece_downloaders
+                .insert(piece_index as u32, downloader.start());
+        });
+    }
 }
 
 impl Actor for Commander {
     type Context = Context<Self>;
 
     fn started(&mut self, ctx: &mut Self::Context) {
+        debug!("Commander started");
         self.register(ctx);
+    }
+
+    fn stopped(&mut self, _ctx: &mut Self::Context) {
+        error!("Commander stopped"); 
     }
 }
 
@@ -177,6 +233,8 @@ impl Handler<ConnectionEvent> for Commander {
             } => {
                 self.peers
                     .insert((ip_address, port), (PeerState::new(), peer));
+
+                self.send_messages(ctx);
 
                 return Box::pin(
                     self.event_handler
@@ -194,9 +252,12 @@ impl Handler<ConnectionEvent> for Commander {
             ConnectionEvent::Disconnected { ip_address, port } => {
                 self.peers.remove(&(ip_address, port));
 
+                self.send_messages(ctx);
+
                 return Box::pin(async {}.into_actor(self));
             }
         }
+
     }
 }
 
@@ -204,7 +265,24 @@ impl Handler<RecvMessageEvent> for Commander {
     type Result = ();
 
     fn handle(&mut self, msg: RecvMessageEvent, ctx: &mut Self::Context) -> Self::Result {
-        todo!()
+        let peer_state = match self.peers.get_mut(&(msg.ip_address, msg.port)) {
+            Some((ps, _)) => ps,
+            None => return,
+        };
+        handle_incoming_messages(peer_state, msg.messages);
+        self.send_messages(ctx);
+    }
+}
+
+impl Handler<MetadataEvent> for Commander {
+    type Result = ();
+
+    fn handle(&mut self, msg: MetadataEvent, _ctx: &mut Self::Context) -> Self::Result {
+        if self.info.is_none() {
+            self.info = Some(msg.info);
+        }
+
+        self.handle_piece_requests();
     }
 }
 

@@ -35,13 +35,20 @@ impl PeerSwarm {
     fn register(&self, ctx: &mut Context<Self>) {
         debug!("Registering peer swarm");
 
-        let fut = self.event_handler.send(Registration::Connection {
+        let connection_fut = self.event_handler.send(Registration::Connection {
             recipient: ctx.address().recipient(),
         });
 
-        ctx.spawn(fut.into_actor(self).map(|result, _, _| {
+        let tracker_fut = self.event_handler.send(Registration::TrackerUpdate { recipient: ctx.address().recipient() });
+
+        ctx.spawn(connection_fut.into_actor(self).map(|result, _, _| {
             result.expect("failed to register peer swarm");
         }));
+
+        ctx.spawn(tracker_fut.into_actor(self).map(|result, _, _| {
+            result.expect("failed to register tracker update");
+        }));
+
     }
 
     fn clear_moratorium(&mut self) {
@@ -73,6 +80,7 @@ impl Handler<TrackerUpdateEvent> for PeerSwarm {
     type Result = ();
 
     fn handle(&mut self, msg: TrackerUpdateEvent, _ctx: &mut Self::Context) -> Self::Result {
+        debug!("Piece swarm received tracker update");
         self.clear_moratorium();
 
         let now = Instant::now();

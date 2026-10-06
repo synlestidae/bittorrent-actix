@@ -21,7 +21,6 @@ enum Connection {
     Connected {
         writer: FramedWrite<BittorrentMessage, OwnedWriteHalf, BittorrentCodec>,
     },
-    Dead,
 }
 
 pub struct Peer {
@@ -101,7 +100,7 @@ impl Peer {
 
     fn terminate(&mut self, ctx: &mut Context<Self>) {
         trace!(
-            "Sending termination event for {}:{}",
+            "sending termination event for {}:{}",
             self.ip_address, self.port
         );
 
@@ -220,7 +219,7 @@ impl Handler<SendMessages> for Peer {
     fn handle(&mut self, msg: SendMessages, _ctx: &mut Self::Context) -> Self::Result {
         if let Connection::Connected { writer } = &mut self.connection {
             trace!(
-                "Sending {} message(s) to {}:{}",
+                "sending {} message(s) to {}:{}",
                 msg.messages.len(),
                 self.ip_address,
                 self.port

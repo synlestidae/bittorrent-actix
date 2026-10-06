@@ -126,7 +126,14 @@ impl MetadataDownloader {
     }
 
     fn request(&mut self, ctx: &mut Context<Self>) {
+        debug!("begin requesting metadata from {}:{}", self.ip_address, self.port);
+        
+        let ip_address = self.ip_address;
+        let port = self.port;
+
         if !self.metadata_handshake_sent {
+            debug!("first sending metadata handshake to {}:{}", self.ip_address, self.port);
+
             self.metadata_handshake_sent = true;
             let messages = vec![BittorrentMessage::Extension {
                 message: ExtensionMessage::Handshake {
@@ -135,16 +142,26 @@ impl MetadataDownloader {
                 },
             }];
             let fut = self.peer.send(SendMessages { messages });
-            ctx.spawn(fut.into_actor(self).map(|result, _, _| {
-                result
-                    .expect("unable to send extension handshake")
-                    .expect("unable to send extension handshake");
+            ctx.spawn(fut.into_actor(self).map(move |result, _, _| {
+                match result {
+                    Err(_) => {
+                        debug!("peer must have disconnected, unable to deliver extension handshake message to {}:{}", ip_address, port);
+                    },
+                    Ok(Err(err)) => {
+                        error!("error sending handshake to {}:{}: {:?}", ip_address, port, err);
+                    },
+                    Ok(_) => {
+                        debug!("dispatched extension handshake to {}:{}", ip_address, port);
+                    },
+                }
             }));
         }
         if !self.metadata_handshake_received {
+            debug!("no metadata handshake yet from {}:{}", self.ip_address, self.port);
             return;
         }
         if self.request_made {
+            debug!("metadata request already made to {}:{}", self.ip_address, self.port);
             return;
         }
 
@@ -199,6 +216,8 @@ impl Handler<RecvMessageEvent> for MetadataDownloader {
     type Result = ();
 
     fn handle(&mut self, msg: RecvMessageEvent, ctx: &mut Self::Context) -> Self::Result {
+        trace!("Processing messages from {}:{} for metadata", self.ip_address, self.port);
+
         let messages = msg.messages;
 
         messages.iter().for_each(|m| match m {
@@ -210,7 +229,7 @@ impl Handler<RecvMessageEvent> for MetadataDownloader {
                     },
             } => {
                 trace!(
-                    "Received extension handshake metadata_size={:?}, ut_metadata={:?}",
+                    "Received metadata_size={:?}, ut_metadata={:?}",
                     metadata_size, ut_metadata
                 );
                 self.exact_length = metadata_size.map(|m| m as usize);
@@ -234,6 +253,8 @@ impl Handler<RecvMessageEvent> for MetadataDownloader {
                 }
             })
             .collect();
+
+        debug!("Received {} metadata message(s) from {}:{}", metadatas.len(), self.ip_address, self.port);
 
         metadatas.sort_by_key(|(piece_index, _, _)| *piece_index);
 
